@@ -636,17 +636,35 @@ impl PolicyEngine {
         let candidates = narrow_connections_by_path(app_connections, hostname, request_path);
         let app_connections: &[db::AppConnectionRow] = &candidates;
 
-        // Single connection — use it directly
+        // Single connection — use it directly. Its rules always merge (they
+        // self-select by path at apply time), but the winner metadata is
+        // dropped when the provider does not serve this request's path — a
+        // lone Calendar connection on a `/youtube/` request must not donate
+        // its granular policy, finalizer, or host rewrite.
         if app_connections.len() == 1 {
-            return self
-                .resolve_connection_injections(
-                    &app_connections[0],
-                    hostname,
-                    organization_id,
-                    project_id,
-                    cache,
-                )
-                .await;
+            let conn = &app_connections[0];
+            let mut result = self
+                .resolve_connection_injections(conn, hostname, organization_id, project_id, cache)
+                .await?;
+            if let AppConnectionResult::Rules {
+                provider,
+                rewrite_host,
+                connection_label,
+                finalizer,
+                body_transform,
+                session_policy,
+                ..
+            } = &mut result
+            {
+                if !provider_serves_request(provider, hostname, request_path) {
+                    *rewrite_host = None;
+                    *connection_label = None;
+                    *finalizer = None;
+                    *body_transform = None;
+                    *session_policy = None;
+                }
+            }
+            return Ok(result);
         }
 
         // Multiple connections — check for ambiguity per provider
@@ -711,27 +729,25 @@ impl PolicyEngine {
                     .await?
                 {
                     rules.extend(r);
-                    if rewrite_host.is_some() {
-                        resolved_rewrite_host = rewrite_host;
-                    }
-                    if resolved_label.is_none() {
-                        resolved_label = connection_label;
-                    }
-                    if finalizer.is_some() {
-                        resolved_finalizer = finalizer;
-                    }
-                    if body_transform.is_some() {
-                        resolved_body_transform = body_transform;
-                    }
-                    // Tie the granular policy to the connection that actually
-                    // serves THIS host — not merely the first to yield rules. A
-                    // non-serving connection (e.g. a GitHub connection on a
-                    // Dropbox request) still returns `Rules` carrying its own
-                    // policy, so adopting the first would mis-apply it.
-                    let serves_host = request_path
-                        .map(|p| apps::provider_matches_host_and_path(&provider, hostname, p))
-                        .unwrap_or(false);
-                    if serves_host {
+                    // Tie ALL winner metadata to the connection that actually
+                    // serves THIS request — not merely the first to yield
+                    // rules. A non-serving connection (e.g. a GitHub
+                    // connection on a Dropbox request) still returns `Rules`
+                    // carrying its own policy/finalizer/rewrite, and adopting
+                    // those would mis-apply them to a request it doesn't own.
+                    if provider_serves_request(&provider, hostname, request_path) {
+                        if rewrite_host.is_some() {
+                            resolved_rewrite_host = rewrite_host;
+                        }
+                        if resolved_label.is_none() {
+                            resolved_label = connection_label;
+                        }
+                        if finalizer.is_some() {
+                            resolved_finalizer = finalizer;
+                        }
+                        if body_transform.is_some() {
+                            resolved_body_transform = body_transform;
+                        }
                         resolved_session_policy = session_policy;
                     }
                     if resolved_provider.is_none() {
@@ -1411,6 +1427,73 @@ fn narrow_connections_by_path<'a>(
     }
 }
 
+/// True when `provider` serves this request's host+path. Winner metadata
+/// (granular policy, finalizer, body transform, host rewrite, label) is
+/// adopted only from a serving connection; injection rules need no such
+/// gate — they self-select via `path_pattern` at apply time. A missing
+/// request path is conservatively non-serving.
+fn provider_serves_request(provider: &str, hostname: &str, request_path: Option<&str>) -> bool {
+    request_path
+        .map(|p| apps::provider_matches_host_and_path(provider, hostname, p))
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+impl PolicyEngine {
+    /// Test-only engine whose pool is lazy and never dereferenced —
+    /// resolution tests that stay on cache-hit paths need no Postgres.
+    pub(crate) fn test_stub() -> Self {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@127.0.0.1:9/unused")
+            .expect("lazy pool");
+        let crypto = Arc::new(
+            CryptoService::from_base64_key("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+                .expect("test key"),
+        );
+        let onepassword = Arc::new(OnePasswordVaultProvider::new(
+            pool.clone(),
+            Arc::clone(&crypto),
+        ));
+        PolicyEngine {
+            pool,
+            crypto,
+            onepassword,
+        }
+    }
+}
+
+/// Test-only: seed the `app_injection:` cache entry exactly the way
+/// `resolve_connection_injections` writes it (struct-typed, so shape drift
+/// breaks tests loudly instead of deserializing via defaults).
+#[cfg(test)]
+#[expect(clippy::too_many_arguments)]
+pub(crate) async fn seed_app_injection_cache(
+    cache: &Arc<dyn CacheStore>,
+    organization_id: &str,
+    project_id: &str,
+    conn: &db::AppConnectionRow,
+    hostname: &str,
+    rules: Vec<InjectionRule>,
+    rewrite_host: Option<&str>,
+    connection_label: Option<&str>,
+) {
+    let policy_suffix = conn
+        .session_policy
+        .as_ref()
+        .map(|sp| format!(":{sp}"))
+        .unwrap_or_default();
+    let key = format!(
+        "app_injection:{organization_id}:{project_id}:{}:{hostname}{policy_suffix}",
+        conn.id
+    );
+    let entry = CachedAppInjection {
+        rules,
+        rewrite_host: rewrite_host.map(str::to_string),
+        connection_label: connection_label.map(str::to_string),
+    };
+    cache.set(&key, &entry, 60).await;
+}
+
 // ── Host matching ───────────────────────────────────────────────────────
 
 /// Returns `true` when the credential's stored host does not match the
@@ -1857,6 +1940,215 @@ mod tests {
 
     fn ids(conns: &[db::AppConnectionRow]) -> Vec<&str> {
         conns.iter().map(|c| c.id.as_str()).collect()
+    }
+
+    // ── serves-path metadata gating (#428) ──────────────────────────────
+
+    fn bearer_rule(pattern: &str, token: &str) -> InjectionRule {
+        InjectionRule {
+            path_pattern: pattern.to_string(),
+            injections: vec![Injection::SetHeader {
+                name: "authorization".to_string(),
+                value: format!("Bearer {token}"),
+            }],
+        }
+    }
+
+    async fn seed_app_injection(
+        cache: &Arc<dyn CacheStore>,
+        conn: &db::AppConnectionRow,
+        hostname: &str,
+        rules: Vec<InjectionRule>,
+        rewrite_host: Option<&str>,
+        connection_label: Option<&str>,
+    ) {
+        seed_app_injection_cache(
+            cache,
+            "o1",
+            "p1",
+            conn,
+            hostname,
+            rules,
+            rewrite_host,
+            connection_label,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn single_connection_metadata_gated_to_serving_path() {
+        let engine = PolicyEngine::test_stub();
+        let store = new_store().await;
+        let mut c = conn("c1", "google-calendar");
+        c.session_policy = Some(serde_json::json!({"folders": ["x"]}));
+        seed_app_injection(
+            &store,
+            &c,
+            "www.googleapis.com",
+            vec![bearer_rule("/calendar/*", "cal")],
+            Some("rw.example.com"),
+            Some("Cal"),
+        )
+        .await;
+
+        // Non-serving path (/youtube): rules still returned, metadata dropped.
+        let res = engine
+            .resolve_app_injection_for_request(
+                std::slice::from_ref(&c),
+                "www.googleapis.com",
+                Some("/youtube/v3/search"),
+                None,
+                "o1",
+                "p1",
+                &*store,
+            )
+            .await
+            .unwrap();
+        match res {
+            AppConnectionResult::Rules {
+                rules,
+                rewrite_host,
+                connection_label,
+                finalizer,
+                body_transform,
+                session_policy,
+                ..
+            } => {
+                assert_eq!(rules.len(), 1);
+                assert!(rewrite_host.is_none());
+                assert!(connection_label.is_none());
+                assert!(finalizer.is_none());
+                assert!(body_transform.is_none());
+                assert!(session_policy.is_none());
+            }
+            _ => panic!("expected Rules"),
+        }
+
+        // Serving path (/calendar): metadata kept.
+        let res = engine
+            .resolve_app_injection_for_request(
+                std::slice::from_ref(&c),
+                "www.googleapis.com",
+                Some("/calendar/v3/events"),
+                None,
+                "o1",
+                "p1",
+                &*store,
+            )
+            .await
+            .unwrap();
+        match res {
+            AppConnectionResult::Rules {
+                rewrite_host,
+                connection_label,
+                session_policy,
+                ..
+            } => {
+                assert_eq!(rewrite_host.as_deref(), Some("rw.example.com"));
+                assert_eq!(connection_label.as_deref(), Some("Cal"));
+                assert!(session_policy.is_some());
+            }
+            _ => panic!("expected Rules"),
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_connection_id_keeps_metadata_off_path() {
+        let engine = PolicyEngine::test_stub();
+        let store = new_store().await;
+        let c = conn("c1", "google-calendar");
+        seed_app_injection(
+            &store,
+            &c,
+            "www.googleapis.com",
+            vec![bearer_rule("/calendar/*", "cal")],
+            Some("rw.example.com"),
+            Some("Cal"),
+        )
+        .await;
+
+        // An explicit x-onecli-connection-id is a deliberate override: the
+        // serves-path gate does not apply.
+        let res = engine
+            .resolve_app_injection_for_request(
+                std::slice::from_ref(&c),
+                "www.googleapis.com",
+                Some("/youtube/v3/search"),
+                Some("c1"),
+                "o1",
+                "p1",
+                &*store,
+            )
+            .await
+            .unwrap();
+        match res {
+            AppConnectionResult::Rules {
+                rewrite_host,
+                connection_label,
+                ..
+            } => {
+                assert_eq!(rewrite_host.as_deref(), Some("rw.example.com"));
+                assert_eq!(connection_label.as_deref(), Some("Cal"));
+            }
+            _ => panic!("expected Rules"),
+        }
+    }
+
+    #[tokio::test]
+    async fn merge_loop_drops_metadata_when_no_provider_serves() {
+        // Two providers, neither serving the request path (/youtube): the
+        // empty-narrow fallback keeps both, their rules merge (they
+        // self-select at apply time), and no one's metadata is adopted.
+        let engine = PolicyEngine::test_stub();
+        let store = new_store().await;
+        let cal = conn("c1", "google-calendar");
+        let gm = conn("c2", "gmail");
+        seed_app_injection(
+            &store,
+            &cal,
+            "www.googleapis.com",
+            vec![bearer_rule("/calendar/*", "cal")],
+            Some("cal.example.com"),
+            Some("Cal"),
+        )
+        .await;
+        seed_app_injection(
+            &store,
+            &gm,
+            "www.googleapis.com",
+            vec![bearer_rule("/gmail/*", "gm")],
+            Some("gm.example.com"),
+            Some("Gm"),
+        )
+        .await;
+
+        let res = engine
+            .resolve_app_injection_for_request(
+                &[cal, gm],
+                "www.googleapis.com",
+                Some("/youtube/v3/search"),
+                None,
+                "o1",
+                "p1",
+                &*store,
+            )
+            .await
+            .unwrap();
+        match res {
+            AppConnectionResult::Rules {
+                rules,
+                rewrite_host,
+                connection_label,
+                session_policy,
+                ..
+            } => {
+                assert_eq!(rules.len(), 2);
+                assert!(rewrite_host.is_none());
+                assert!(connection_label.is_none());
+                assert!(session_policy.is_none());
+            }
+            _ => panic!("expected Rules"),
+        }
     }
 
     #[test]
