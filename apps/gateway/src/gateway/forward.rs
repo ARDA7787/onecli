@@ -120,7 +120,7 @@ const MAX_DEFAULT_INTERCEPT_BODY: usize = 64 * 1024;
 /// the agent as an inexplicable upstream 401.
 ///
 /// KNOWN GAP: this runs before the manual-approval wait, and before the
-/// `pre_forward` refusals (claim, budget, quota, the Dropbox guard) — those
+/// `pre_forward` refusals (budget, quota, the Dropbox guard) — those
 /// need `injection_count`, so the ordering is forced. A request denied at any
 /// of those points has therefore already minted. Closing it would mean moving
 /// header injection past the approval hold, which changes what `pre_forward`
@@ -280,10 +280,10 @@ pub(crate) async fn forward_request(
     // provider registry knows), NOT the port-bearing / possibly-rewritten `host`,
     // which would silently identify no provider and never block.
     if let Some(provider) =
-        crate::apps::app_availability_block(policy_host, &path, &rules.available_apps)
+        crate::ee::principals::app_availability_block(policy_host, &path, &rules.available_apps)
     {
-        info!(method = %method, host = %policy_host, provider = %provider, "app unavailable to project — refusing request");
-        return Ok(response::app_unavailable(
+        info!(method = %method, host = %policy_host, provider = %provider, "app unavailable to workspace — refusing request");
+        return Ok(crate::ee::response::app_unavailable(
             &provider,
             method.as_str(),
             &path,
@@ -326,7 +326,7 @@ pub(crate) async fn forward_request(
                 method.as_str(),
                 &path,
                 host,
-                proxy_ctx.project_id.as_deref(),
+                proxy_ctx.workspace_id.as_deref(),
             ));
         }
         PolicyDecision::Blocked { rule_name } => {
@@ -347,7 +347,7 @@ pub(crate) async fn forward_request(
                 method.as_str(),
                 &path,
                 rule_name,
-                proxy_ctx.project_id.as_deref(),
+                proxy_ctx.workspace_id.as_deref(),
             ));
         }
         PolicyDecision::RateLimited {
@@ -446,7 +446,7 @@ pub(crate) async fn forward_request(
         if let PolicyDecision::ManualApproval { rule_id } = &decision {
             info!(method = %method, url = %url, rule_id = %rule_id, "MANUAL APPROVAL required");
 
-            let project_id = match proxy_ctx.project_id.as_deref() {
+            let workspace_id = match proxy_ctx.workspace_id.as_deref() {
                 Some(id) => id,
                 None => {
                     warn!(url = %url, "manual approval requires authenticated agent");
@@ -537,7 +537,7 @@ pub(crate) async fn forward_request(
             let approval = PendingApproval {
                 id: approval_id.clone(),
                 organization_id: org_id.to_string(),
-                project_id: project_id.to_string(),
+                workspace_id: workspace_id.to_string(),
                 agent_id: agent_id.to_string(),
                 agent_name: agent_name.to_string(),
                 agent_identifier: proxy_ctx.agent_identifier.clone(),
@@ -553,7 +553,7 @@ pub(crate) async fn forward_request(
             };
 
             let decision_rx = approval_store
-                .prepare_wait(org_id, project_id, &approval_id)
+                .prepare_wait(org_id, workspace_id, &approval_id)
                 .await;
 
             // Guard cleans up the approval if the agent disconnects (future cancelled).
@@ -561,7 +561,7 @@ pub(crate) async fn forward_request(
             let mut guard = ApprovalGuard::new(
                 approval_id.clone(),
                 org_id.to_string(),
-                project_id.to_string(),
+                workspace_id.to_string(),
                 Arc::clone(approval_store),
             );
 
@@ -569,7 +569,7 @@ pub(crate) async fn forward_request(
                 warn!(url = %url, error = ?e, "failed to store pending approval");
                 guard.defuse();
                 approval_store
-                    .remove(org_id, project_id, &approval_id)
+                    .remove(org_id, workspace_id, &approval_id)
                     .await;
                 return Ok(response::approval_store_unavailable());
             }
@@ -630,7 +630,7 @@ pub(crate) async fn forward_request(
                 // detached, racing the pool close that follows the drain.
                 guard.defuse();
                 approval_store
-                    .remove(org_id, project_id, &approval_id)
+                    .remove(org_id, workspace_id, &approval_id)
                     .await;
                 let resolved_at = time::OffsetDateTime::now_utc()
                     .format(&time::format_description::well_known::Iso8601::DEFAULT)
@@ -666,7 +666,7 @@ pub(crate) async fn forward_request(
                 Some(ApprovalDecision::Approve) => {
                     info!(url = %url, approval_id = %approval_id, "APPROVED — forwarding request");
                     approval_store
-                        .remove(org_id, project_id, &approval_id)
+                        .remove(org_id, workspace_id, &approval_id)
                         .await;
                     approval_approved_by = approved_by;
                     (
@@ -683,7 +683,7 @@ pub(crate) async fn forward_request(
                     };
                     warn!(url = %url, approval_id = %approval_id, reason, "MANUAL APPROVAL rejected");
                     approval_store
-                        .remove(org_id, project_id, &approval_id)
+                        .remove(org_id, workspace_id, &approval_id)
                         .await;
                     let resolved_at = time::OffsetDateTime::now_utc()
                         .format(&time::format_description::well_known::Iso8601::DEFAULT)
@@ -716,9 +716,9 @@ pub(crate) async fn forward_request(
     // ── Provider-specific body transformation ────────────────────
     let forward_body = match rules.body_transform {
         Some(crate::apps::BodyTransform::GitHubCommitTrailer) => {
-            if let (Some(agent_name), Some(project_id)) = (
+            if let (Some(agent_name), Some(workspace_id)) = (
                 proxy_ctx.agent_name.as_deref(),
-                proxy_ctx.project_id.as_deref(),
+                proxy_ctx.workspace_id.as_deref(),
             ) {
                 super::transforms::github_commit_trailer::try_inject_trailer(
                     host,
@@ -726,7 +726,7 @@ pub(crate) async fn forward_request(
                     &path,
                     forward_body,
                     agent_name,
-                    project_id,
+                    workspace_id,
                 )
                 .await
                 .unwrap_or_else(|e| {
@@ -739,11 +739,6 @@ pub(crate) async fn forward_request(
         }
         None => forward_body,
     };
-
-    // ── Claim-mode request-body note (cloud) ──────────────────────
-    // For an unclaimed partner-created org, the cloud build injects a calm
-    // claim note into LLM requests; OSS is a passthrough no-op.
-    let forward_body = hooks::prepare_request_body(rules, host, forward_body).await;
 
     // ── Provider-specific request signing ─────────────────────────
     let forward_body = match rules
@@ -760,7 +755,6 @@ pub(crate) async fn forward_request(
             )
             .await?
         }
-        #[cfg(edition_cloud)]
         Some(crate::apps::RequestFinalizer::AwsAssumeRole) => {
             super::finalizers::aws_sts::finalize_request(
                 host,
@@ -790,7 +784,7 @@ pub(crate) async fn forward_request(
     let resp_headers = upstream_resp.headers().clone();
 
     // Response hints: intercept known-deprecated host error responses.
-    if proxy_ctx.agent_token.is_some() {
+    {
         let hostname = super::strip_port(host);
         if let Some(hint) =
             super::hints::find_hint(hostname, &path, status.as_u16(), injection_count)
@@ -810,7 +804,6 @@ pub(crate) async fn forward_request(
     // guide the agent to connect/configure credentials in OneCLI.
     if injection_count == 0
         && (status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN)
-        && proxy_ctx.agent_token.is_some()
     {
         let hostname = super::strip_port(host);
 
@@ -824,7 +817,7 @@ pub(crate) async fn forward_request(
                 status,
                 provider,
                 display_name,
-                proxy_ctx.project_id.as_deref(),
+                proxy_ctx.workspace_id.as_deref(),
             ));
         }
 
@@ -836,7 +829,7 @@ pub(crate) async fn forward_request(
                 provider,
                 display_name,
                 proxy_ctx.agent_name.as_deref(),
-                proxy_ctx.project_id.as_deref(),
+                proxy_ctx.workspace_id.as_deref(),
             ));
         }
 
@@ -847,7 +840,7 @@ pub(crate) async fn forward_request(
                 status,
                 hostname,
                 proxy_ctx.agent_name.as_deref(),
-                proxy_ctx.project_id.as_deref(),
+                proxy_ctx.workspace_id.as_deref(),
             ));
         }
 
@@ -857,14 +850,13 @@ pub(crate) async fn forward_request(
             status,
             hostname,
             &path,
-            proxy_ctx.project_id.as_deref(),
+            proxy_ctx.workspace_id.as_deref(),
         ));
     }
 
     // Some APIs (e.g. Google) return 400 instead of 401 for invalid/missing API keys.
     // Buffer the body and check for auth-related keywords before deciding.
-    if injection_count == 0 && status == StatusCode::BAD_REQUEST && proxy_ctx.agent_token.is_some()
-    {
+    if injection_count == 0 && status == StatusCode::BAD_REQUEST {
         let body_bytes = upstream_resp
             .bytes()
             .await
@@ -884,7 +876,7 @@ pub(crate) async fn forward_request(
                     StatusCode::BAD_REQUEST,
                     provider,
                     display_name,
-                    proxy_ctx.project_id.as_deref(),
+                    proxy_ctx.workspace_id.as_deref(),
                 ));
             }
             if let Some((provider, display_name)) =
@@ -896,7 +888,7 @@ pub(crate) async fn forward_request(
                     provider,
                     display_name,
                     proxy_ctx.agent_name.as_deref(),
-                    proxy_ctx.project_id.as_deref(),
+                    proxy_ctx.workspace_id.as_deref(),
                 ));
             }
             if apps::provider_for_host(hostname).is_some() {
@@ -905,7 +897,7 @@ pub(crate) async fn forward_request(
                     StatusCode::BAD_REQUEST,
                     hostname,
                     proxy_ctx.agent_name.as_deref(),
-                    proxy_ctx.project_id.as_deref(),
+                    proxy_ctx.workspace_id.as_deref(),
                 ));
             }
             info!(method = %method, url = %url, status = 400, "auth-related 400 — credential not found");
@@ -913,7 +905,7 @@ pub(crate) async fn forward_request(
                 StatusCode::BAD_REQUEST,
                 hostname,
                 &path,
-                proxy_ctx.project_id.as_deref(),
+                proxy_ctx.workspace_id.as_deref(),
             ));
         }
 
@@ -945,7 +937,7 @@ pub(crate) async fn forward_request(
     // Track all authenticated proxied requests and stream response body.
     // Hooks handle telemetry emission and optional response stream wrapping.
     let body_stream: hooks::BodyStream = if let (Some(aid), Some(gid)) = (
-        proxy_ctx.project_id.as_deref(),
+        proxy_ctx.workspace_id.as_deref(),
         proxy_ctx.agent_id.as_deref(),
     ) {
         let hostname = super::strip_port(host);
@@ -986,7 +978,7 @@ pub(crate) async fn forward_request(
                 .as_deref()
                 .unwrap_or("")
                 .to_string(),
-            project_id: aid.to_string(),
+            workspace_id: aid.to_string(),
             agent_id: gid.to_string(),
             agent_name: proxy_ctx
                 .agent_name
@@ -1038,7 +1030,7 @@ fn emit_policy_telemetry(
     matched_rule: Option<crate::policy::MatchedRule>,
 ) {
     let (pid, aid) = match (
-        proxy_ctx.project_id.as_deref(),
+        proxy_ctx.workspace_id.as_deref(),
         proxy_ctx.agent_id.as_deref(),
     ) {
         (Some(p), Some(a)) => (p, a),
@@ -1057,7 +1049,7 @@ fn emit_policy_telemetry(
             .as_deref()
             .unwrap_or("")
             .to_string(),
-        project_id: pid.to_string(),
+        workspace_id: pid.to_string(),
         agent_id: aid.to_string(),
         agent_name: proxy_ctx
             .agent_name
@@ -1096,7 +1088,7 @@ fn emit_approval_telemetry(
     matched_rule: Option<crate::policy::MatchedRule>,
 ) {
     let (pid, aid) = match (
-        proxy_ctx.project_id.as_deref(),
+        proxy_ctx.workspace_id.as_deref(),
         proxy_ctx.agent_id.as_deref(),
     ) {
         (Some(p), Some(a)) => (p, a),
@@ -1114,7 +1106,7 @@ fn emit_approval_telemetry(
             .as_deref()
             .unwrap_or("")
             .to_string(),
-        project_id: pid.to_string(),
+        workspace_id: pid.to_string(),
         agent_id: aid.to_string(),
         agent_name: proxy_ctx
             .agent_name
@@ -1151,6 +1143,15 @@ fn body_indicates_auth_error(body: &[u8]) -> bool {
         "unauthorized",
         "unauthenticated",
         "authentication",
+        // Dropbox's 400 says "Invalid authorization value in HTTP header" —
+        // the Authorization HEADER is how several APIs phrase a missing or
+        // bad credential in a 400 body. Matched as the two-word phrases only:
+        // bare "authorization" would also catch OAuth-protocol 400s that must
+        // reach the agent verbatim ("authorization_pending" device-flow
+        // polls, "Malformed authorization code." exchanges — and
+        // oauth2.googleapis.com is a registered host).
+        "authorization header",
+        "authorization value",
         "credentials",
         "access denied",
         "permission denied",
@@ -1262,6 +1263,42 @@ mod tests {
     fn auth_error_detects_api_key() {
         let body = br#"{"error": {"message": "API key not valid"}}"#;
         assert!(body_indicates_auth_error(body));
+    }
+
+    #[test]
+    fn auth_error_detects_dropbox_invalid_authorization_400() {
+        // Dropbox answers a missing credential with a plain-text 400, not a
+        // 401 — this exact phrase must keep routing to app_not_connected or
+        // the chat's connect card never shows for Dropbox.
+        let body = br#"Error in call to API function "files/list_folder": Invalid authorization value in HTTP header/URL parameter"#;
+        assert!(body_indicates_auth_error(body));
+    }
+
+    #[test]
+    fn auth_error_detects_missing_authorization_header_400() {
+        // The other half of the header-noun phrasing: "Authorization header"
+        // (Dropbox pins "authorization value" above).
+        let body = br#"{"message": "Missing Authorization header"}"#;
+        assert!(body_indicates_auth_error(body));
+    }
+
+    #[test]
+    fn auth_error_ignores_oauth_device_flow_pending_400() {
+        // Google's device-flow poll answers 400 `authorization_pending` until
+        // the user approves — and oauth2.googleapis.com is a registered
+        // gateway host. Matching it would replace the body the OAuth client
+        // must keep reading with a bogus "not connected" refusal.
+        let body = br#"{"error": "authorization_pending"}"#;
+        assert!(!body_indicates_auth_error(body));
+    }
+
+    #[test]
+    fn auth_error_ignores_oauth_code_exchange_400() {
+        // Authorization-CODE grant errors talk about the OAuth protocol, not
+        // a missing credential on the proxied request.
+        let body =
+            br#"{"error": "invalid_grant", "error_description": "Malformed authorization code."}"#;
+        assert!(!body_indicates_auth_error(body));
     }
 
     #[test]

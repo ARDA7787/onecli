@@ -1,0 +1,408 @@
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { AdapterWorkItem, AdapterWorkTurn } from "@onecli/agent-protocol";
+import type { ControlPlaneClient } from "./control-plane";
+import { mirrorFinishedTurn } from "./mirror";
+import {
+  createFakeControlPlane,
+  startFakeSlackServer,
+  type FakeSlackServer,
+} from "./test/fakes";
+
+/**
+ * The mirror/catch-up pass. Its whole safety story is ONE ordering: the
+ * cursor CAS is taken BEFORE anything is posted, so of two adapters (deploy
+ * overlap, restart twin) exactly one posts and the other posts nothing.
+ * The price — a crash between claim and post drops that mirror — is the
+ * documented at-most-once tradeoff: a duplicate post into a human channel
+ * is worse than a missing copy of something the web already shows.
+ */
+
+let slack: FakeSlackServer;
+
+beforeEach(async () => {
+  slack = await startFakeSlackServer();
+  process.env.SLACK_API_BASE_URL = slack.url;
+});
+
+afterEach(async () => {
+  delete process.env.SLACK_API_BASE_URL;
+  await slack.close();
+});
+
+const turn = (overrides: Partial<AdapterWorkTurn> = {}): AdapterWorkTurn => ({
+  id: "t1",
+  status: "completed",
+  source: "web",
+  userId: "u1",
+  message: "Deploy it <now>",
+  error: null,
+  errorCode: null,
+  createdAt: "2026-08-06T10:00:00.000Z",
+  finishedAt: "2026-08-06T10:00:20.000Z",
+  ...overrides,
+});
+
+const item = (
+  turnOverrides: Partial<AdapterWorkTurn> = {},
+): AdapterWorkItem => ({
+  linkId: "l1",
+  presenceId: "p1",
+  conversationId: "cv1",
+  externalThreadId: "D100",
+  kind: "direct",
+  turn: turn(turnOverrides),
+});
+
+/** A transcript whose only text event answers t1. */
+const transcriptWith = (
+  answer: string | null,
+): Pick<ControlPlaneClient, "readTranscript"> => ({
+  readTranscript: async () => ({
+    events: answer
+      ? [{ seq: 1, turnId: "t1", type: "text", payload: { text: answer } }]
+      : [],
+    nextSince: 2,
+    hasMore: false,
+  }),
+});
+
+const mirror = (input: {
+  controlPlane: ControlPlaneClient;
+  workItem?: AdapterWorkItem;
+  knownCursor?: string | null;
+  iconUrl?: string | null;
+  onLog?: (message: string, detail?: unknown) => void;
+}) =>
+  mirrorFinishedTurn({
+    controlPlane: input.controlPlane,
+    botToken: "xoxb-bot",
+    provider: "slack",
+    iconUrl: input.iconUrl ?? null,
+    knownCursor: input.knownCursor ?? "2026-08-05T00:00:00.000Z",
+    item: input.workItem ?? item(),
+    onLog: input.onLog ?? (() => {}),
+  });
+
+describe("the claim-then-post law", () => {
+  it("advances the cursor BEFORE any Slack post, with the known expectation", async () => {
+    // MUTATION-PROOF: swap the CAS below the posts and a twin adapter (or a
+    // crash-retry) posts the same answer twice into a human channel — the
+    // exact failure the CAS exists to make impossible.
+    const order: string[] = [];
+    const casArgs: [string, string | null, string][] = [];
+    slack.onCall = (call) => order.push(`slack:${call.method}`);
+    const controlPlane = createFakeControlPlane({
+      ...transcriptWith("It is done."),
+      advanceCursor: async (linkId, expect_, next) => {
+        order.push("cas");
+        casArgs.push([linkId, expect_, next]);
+        return true;
+      },
+    });
+
+    const next = await mirror({ controlPlane });
+
+    expect(next).toBe("2026-08-06T10:00:00.000Z");
+    expect(order[0]).toBe("cas");
+    expect(order.slice(1)).toEqual([
+      "slack:chat.postMessage",
+      "slack:chat.postMessage",
+    ]);
+    expect(casArgs).toEqual([
+      ["l1", "2026-08-05T00:00:00.000Z", "2026-08-06T10:00:00.000Z"],
+    ]);
+  });
+
+  it("posts NOTHING and returns null when the CAS is lost", async () => {
+    // The twin won: this adapter's copy of the world is stale, and even
+    // reading the transcript would be wasted work.
+    let transcriptReads = 0;
+    const controlPlane = createFakeControlPlane({
+      advanceCursor: async () => false,
+      readTranscript: async () => {
+        transcriptReads += 1;
+        return { events: [], nextSince: 0, hasMore: false };
+      },
+    });
+
+    const next = await mirror({ controlPlane });
+
+    expect(next).toBeNull();
+    expect(slack.calls).toEqual([]);
+    expect(transcriptReads).toBe(0);
+  });
+});
+
+describe("what gets posted", () => {
+  it("mirrors a web-sourced turn as attributed question + answer, both escaped", async () => {
+    const controlPlane = createFakeControlPlane(
+      transcriptWith("It is done <ok>"),
+    );
+
+    await mirror({ controlPlane });
+
+    const posted = slack.callsTo("chat.postMessage");
+    expect(posted.map((call) => call.form.text)).toEqual([
+      "_(from the web)_ Deploy it &lt;now&gt;",
+      "It is done &lt;ok&gt;",
+    ]);
+    expect(posted.every((call) => call.form.channel === "D100")).toBe(true);
+    // No avatar in the deps — no icon_url key on either post.
+    expect(posted.every((call) => !("icon_url" in call.form))).toBe(true);
+  });
+
+  it("carries the agent's avatar as icon_url on every mirrored post when set", async () => {
+    const controlPlane = createFakeControlPlane(transcriptWith("It is done."));
+
+    await mirror({
+      controlPlane,
+      iconUrl: "https://api.example.com/v1/agent-images/ag1/abc",
+    });
+
+    const posted = slack.callsTo("chat.postMessage");
+    expect(posted).toHaveLength(2);
+    expect(
+      posted.every(
+        (call) =>
+          call.form.icon_url ===
+          "https://api.example.com/v1/agent-images/ag1/abc",
+      ),
+    ).toBe(true);
+  });
+
+  it("mirrors the human's words VERBATIM — the continuity bridge never rides turn.message to Slack", async () => {
+    // The Slack leak the user hit (2026-08-07): the step-7 continuity bridge
+    // used to be prepended INTO turn.message, so this attributed mirror echoed
+    // the whole "[Context from your automated runs …]" block as if the person
+    // had typed it. The mirror faithfully posts turn.message, so the fix is
+    // upstream — the bridge now rides the delivery-only context channel and
+    // turn.message stays the human's words. This locks that contract at the
+    // Slack boundary: a leaked prefix would land here, so it must not exist.
+    const humanWords = "can you wait 10 seconds, and then tell me the time?";
+    const controlPlane = createFakeControlPlane(transcriptWith("It is 12:00."));
+
+    await mirror({
+      controlPlane,
+      workItem: item({ source: "web", message: humanWords }),
+    });
+
+    const posted = slack.callsTo("chat.postMessage");
+    expect(posted[0]?.form.text).toBe(`_(from the web)_ ${humanWords}`);
+    expect(posted[0]?.form.text).not.toContain(
+      "[Context from your automated runs",
+    );
+  });
+
+  it("posts a scheduled run's report as ONE labeled message — never '(from the web)'", async () => {
+    // A cron delivery is platform-materialized: its message is the schedule
+    // header, not a person's question, and attributing automation to a human
+    // is the mislabel this arm exists to prevent. MUTATION-PROOF: drop the
+    // `scheduled` branch from mirrorFinishedTurn and this fails.
+    const controlPlane = createFakeControlPlane(
+      transcriptWith("Inbox is clear <ok>"),
+    );
+
+    await mirror({
+      controlPlane,
+      workItem: item({
+        source: "cron",
+        userId: null,
+        message: 'Scheduled run "daily-check"',
+      }),
+    });
+
+    const posted = slack.callsTo("chat.postMessage");
+    expect(posted.map((call) => call.form.text)).toEqual([
+      ':calendar: _Scheduled run "daily-check"_\nInbox is clear &lt;ok&gt;',
+    ]);
+  });
+
+  it("posts a watch run's report as ONE labeled message with the stopwatch icon", async () => {
+    // A watch delivery shares the cron shape but a distinct icon, keyed on the
+    // source. MUTATION-PROOF: flip the :stopwatch:/:calendar: ternary (or drop
+    // "watch" from the automation check) and this fails.
+    const controlPlane = createFakeControlPlane(
+      transcriptWith("Tests passed <ok>"),
+    );
+
+    await mirror({
+      controlPlane,
+      workItem: item({
+        source: "watch",
+        userId: null,
+        message: 'Watch on "tests"',
+      }),
+    });
+
+    const posted = slack.callsTo("chat.postMessage");
+    expect(posted.map((call) => call.form.text)).toEqual([
+      ':stopwatch: _Watch on "tests"_\nTests passed &lt;ok&gt;',
+    ]);
+  });
+
+  it("posts only the answer for a provider-sourced turn", async () => {
+    // The question already sits in the Slack thread — the human typed it
+    // there; re-posting it would echo everyone back at themselves.
+    const controlPlane = createFakeControlPlane(transcriptWith("The answer."));
+
+    await mirror({
+      controlPlane,
+      workItem: item({ source: "slack" }),
+    });
+
+    expect(slack.callsTo("chat.postMessage").map((c) => c.form.text)).toEqual([
+      "The answer.",
+    ]);
+  });
+
+  it("renders the answer's markdown as mrkdwn — bold, bullets, links", async () => {
+    // MUTATION-PROOF: revert the answer post to escapeSlackText(answer) and
+    // this fails — the whole point of the converter is that **bold** stops
+    // showing literal asterisks in Slack.
+    const controlPlane = createFakeControlPlane(
+      transcriptWith(
+        "## Result\n- **state:** green\n[docs](https://e.com/a_(b)) <ok>",
+      ),
+    );
+
+    await mirror({
+      controlPlane,
+      workItem: item({ source: "slack" }),
+    });
+
+    expect(slack.callsTo("chat.postMessage").map((c) => c.form.text)).toEqual([
+      "*Result*\n• *state:* green\n<https://e.com/a_(b)|docs> &lt;ok&gt;",
+    ]);
+  });
+
+  it("converts the automated report body but quotes the header verbatim", async () => {
+    // The header is the automation's name — quoted words, escape only; the
+    // report below it is model markdown. MUTATION-PROOF both ways: escape
+    // the body and the heading/bullet/bold markers stay literal; convert
+    // the header and its literal **daily** collapses to *daily*.
+    const controlPlane = createFakeControlPlane(
+      transcriptWith("## Inbox\n- **unread:** 0"),
+    );
+
+    await mirror({
+      controlPlane,
+      workItem: item({
+        source: "cron",
+        userId: null,
+        message: "Scheduled run **daily** <sweep>",
+      }),
+    });
+
+    expect(slack.callsTo("chat.postMessage").map((c) => c.form.text)).toEqual([
+      ":calendar: _Scheduled run **daily** &lt;sweep&gt;_\n*Inbox*\n• *unread:* 0",
+    ]);
+  });
+
+  it("quotes web-sourced questions VERBATIM — markdown in a human's words is not converted", async () => {
+    // The attributed mirror is a quote, not a rendering: a person who typed
+    // literal asterisks said literal asterisks.
+    const controlPlane = createFakeControlPlane(transcriptWith("Done."));
+
+    await mirror({
+      controlPlane,
+      workItem: item({ source: "web", message: "is **this** bold?" }),
+    });
+
+    expect(slack.callsTo("chat.postMessage")[0]?.form.text).toBe(
+      "_(from the web)_ is **this** bold?",
+    );
+  });
+
+  it("posts the turn's WEB-sourced joined follow-ups before the answer — Slack-sourced ones never echo", async () => {
+    // Mid-run follow-ups the turn consumed: without the web-sourced lines
+    // the Slack thread shows an answer to questions it never saw; WITH the
+    // Slack-sourced ones it would echo the user's own message back. Both
+    // directions are load-bearing.
+    const controlPlane = createFakeControlPlane(
+      transcriptWith("Covers both <asks>"),
+    );
+
+    await mirror({
+      controlPlane,
+      workItem: {
+        ...item({ source: "slack" }),
+        followUps: [
+          { message: "web follow-up <one>", source: "web" },
+          { message: "slack follow-up", source: "slack" },
+        ],
+      },
+    });
+
+    expect(slack.callsTo("chat.postMessage").map((c) => c.form.text)).toEqual([
+      "_(from the web)_ web follow-up &lt;one&gt;",
+      "Covers both &lt;asks&gt;",
+    ]);
+  });
+
+  it("threads both posts when the link is a group thread", async () => {
+    const controlPlane = createFakeControlPlane(transcriptWith("Done."));
+
+    await mirror({
+      controlPlane,
+      workItem: { ...item(), kind: "group", externalThreadId: "C7:99.5" },
+    });
+
+    const posted = slack.callsTo("chat.postMessage");
+    expect(posted).toHaveLength(2);
+    expect(posted.every((call) => call.form.channel === "C7")).toBe(true);
+    expect(posted.every((call) => call.form.thread_ts === "99.5")).toBe(true);
+  });
+
+  it("falls back to the turn's error when the transcript has no text event", async () => {
+    const controlPlane = createFakeControlPlane(transcriptWith(null));
+
+    await mirror({
+      controlPlane,
+      workItem: item({
+        source: "slack",
+        error: "The model provider refused <retry>",
+        errorCode: "provider_refused",
+      }),
+    });
+
+    expect(slack.callsTo("chat.postMessage").map((c) => c.form.text)).toEqual([
+      "The model provider refused &lt;retry&gt;",
+    ]);
+  });
+
+  it("posts nothing at all when there is neither answer nor error, but still advances", async () => {
+    const controlPlane = createFakeControlPlane(transcriptWith(null));
+
+    const next = await mirror({
+      controlPlane,
+      workItem: item({ source: "slack" }),
+    });
+
+    expect(slack.calls).toEqual([]);
+    expect(next).toBe("2026-08-06T10:00:00.000Z");
+  });
+});
+
+describe("post failure after the cursor advanced", () => {
+  it("logs loudly and still returns the new cursor — no retry into a double post", async () => {
+    // The documented tradeoff: once the CAS moved, a retry could no longer
+    // tell "my post failed" from "my twin already posted", so the mirror is
+    // dropped and the web remains the complete record.
+    const logs: string[] = [];
+    slack.respond("chat.postMessage", () => ({
+      ok: false,
+      error: "channel_not_found",
+    }));
+    const controlPlane = createFakeControlPlane(transcriptWith("Answer."));
+
+    const next = await mirror({
+      controlPlane,
+      workItem: item({ source: "slack" }),
+      onLog: (message) => logs.push(message),
+    });
+
+    expect(next).toBe("2026-08-06T10:00:00.000Z");
+    expect(logs).toContain("mirror post failed after cursor advance");
+    expect(slack.callsTo("chat.postMessage")).toHaveLength(1);
+  });
+});

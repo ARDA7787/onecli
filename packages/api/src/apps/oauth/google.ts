@@ -37,7 +37,7 @@ export const exchangeGoogleCode = async ({
 }: OAuthExchangeCodeParams): Promise<OAuthExchangeResult> => {
   if (callbackParams.error) {
     throw new Error(
-      `Google authorization error: ${callbackParams.error} — ${callbackParams.error_description ?? "no description"}`,
+      `Google authorization error: ${callbackParams.error} (${callbackParams.error_description ?? "no description"})`,
     );
   }
 
@@ -60,7 +60,7 @@ export const exchangeGoogleCode = async ({
   if (!tokenRes.ok) {
     const errorBody = await tokenRes.text();
     throw new Error(
-      `Google token exchange failed: ${tokenRes.status} ${tokenRes.statusText} — ${errorBody}`,
+      `Google token exchange failed: ${tokenRes.status} ${tokenRes.statusText} (${errorBody})`,
     );
   }
 

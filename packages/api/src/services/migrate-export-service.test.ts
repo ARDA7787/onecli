@@ -68,7 +68,7 @@ const secret = () => ({
 });
 
 describe("policy that cannot be migrated is reported, never dropped silently", () => {
-  it("reports the project's rules in skipped[] with a count and a next step", async () => {
+  it("reports the workspace's rules in skipped[] with a count and a next step", async () => {
     state.secrets = [secret()];
     state.policyCount = 3;
     const result = await exportToCloud("proj-1", "key", "https://cloud");
@@ -87,7 +87,7 @@ describe("policy that cannot be migrated is reported, never dropped silently", (
     );
   });
 
-  it("says nothing when the project has no policy of its own", async () => {
+  it("says nothing when the workspace has no policy of its own", async () => {
     state.secrets = [secret()];
     state.policyCount = 0;
     const result = await exportToCloud("proj-1", "key", "https://cloud");
@@ -95,7 +95,7 @@ describe("policy that cannot be migrated is reported, never dropped silently", (
   });
 
   it("reports even when there is nothing else to export at all", async () => {
-    // The early return for an empty project is the easiest place to lose the
+    // The early return for an empty workspace is the easiest place to lose the
     // warning: no secrets and no agents, but the user still had policy.
     state.policyCount = 2;
     const result = await exportToCloud("proj-1", "key", "https://cloud");
@@ -108,8 +108,8 @@ describe("policy that cannot be migrated is reported, never dropped silently", (
     state.secrets = [secret()];
     await exportToCloud("proj-1", "key", "https://cloud");
     expect(state.ruleCountWhere).toMatchObject({
-      scope: "project",
-      projectId: "proj-1",
+      scope: "workspace",
+      workspaceId: "proj-1",
       status: "draft",
       isDefault: false,
       source: { notIn: ["blocklist", "equipment", "grant"] },

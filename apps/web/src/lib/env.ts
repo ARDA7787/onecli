@@ -25,7 +25,9 @@ export const APP_URL =
 
 /** API server URL used by browser-side code for general API calls. */
 export const API_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:10255";
+  process.env.API_URL ??
+  process.env.NEXT_PUBLIC_API_URL ??
+  "http://localhost:10256";
 
 /** Gateway HTTP API URL for vault, cache, and approval calls. */
 export const GATEWAY_API_URL =
@@ -51,29 +53,31 @@ export const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION ?? "dev";
 
 // ── Edition ─────────────────────────────────────────────────────────────
 
-/** Parsed build edition + variant (single source of truth). */
+/** Parsed build edition (single source of truth). */
 export const EDITION_INFO = parseEdition(process.env.NEXT_PUBLIC_EDITION);
 
 /** Capability set derived from the current edition. */
 export const CAPS = capabilitiesFor(EDITION_INFO);
-
-/**
- * @deprecated Use `EDITION_INFO.edition`. Raw build-time edition string
- * (`"cloud"` or `""` for OSS); kept for back-compat with existing call-sites.
- */
-export const EDITION = process.env.NEXT_PUBLIC_EDITION ?? "";
 
 /** Convenience flag for cloud-specific logic. */
 export const IS_CLOUD = EDITION_INFO.edition === "cloud";
 
 // ── Auth & Encryption ───────────────────────────────────────────────────
 
-export const NEXTAUTH_SECRET = process.env.NEXTAUTH_SECRET ?? "";
+// The session secret is deliberately NOT re-exported here: nothing in the
+// dashboard reads its value. The server side reaches it through the identity
+// layer's own config (`@onecli/api/lib/env`), and whether it is configured at
+// all is answered by `@onecli/api/lib/session-secret`.
 
 export const SECRET_ENCRYPTION_KEY = process.env.SECRET_ENCRYPTION_KEY ?? "";
 
 export const OAUTH_STATE_SECRET = process.env.OAUTH_STATE_SECRET ?? "";
 
+/**
+ * Whether a Google sign-in button should be offered. Read server-side and
+ * passed to the login screens as a prop — the value itself never reaches the
+ * browser.
+ */
 export const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? "";
 
 export const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? "";

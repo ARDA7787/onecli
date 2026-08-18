@@ -2,7 +2,7 @@
 // gateway. Like the 1Password client, these hit the gateway directly (different
 // base URL + auth) rather than the typed JSON API, so they use
 // getGatewayApiUrl() + getGatewayFetchOptions() (edition-aware: Cognito Bearer +
-// X-Project-Id in cloud, cookie credentials in OSS).
+// X-Workspace-Id in cloud, cookie credentials in OSS).
 import { getGatewayApiUrl } from "@/hooks/use-vault-status";
 import { getGatewayFetchOptions } from "@/lib/gateway-auth";
 
@@ -61,7 +61,7 @@ const gatewayGet = async <T>(
 };
 
 /**
- * List currently-held approvals for the active project. The gateway long-polls
+ * List currently-held approvals for the active workspace. The gateway long-polls
  * this endpoint (holds up to ~30s when nothing is pending), so callers should
  * pass an abort signal with a timeout slightly above that hold.
  */

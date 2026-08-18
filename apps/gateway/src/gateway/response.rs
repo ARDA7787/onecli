@@ -57,9 +57,9 @@ pub(crate) fn dashboard_url() -> &'static str {
     })
 }
 
-fn scoped_url(base: &str, path: &str, project_id: Option<&str>) -> String {
-    match project_id {
-        Some(pid) => format!("{base}/p/{pid}{path}"),
+fn scoped_url(base: &str, path: &str, workspace_id: Option<&str>) -> String {
+    match workspace_id {
+        Some(pid) => format!("{base}/w/{pid}{path}"),
         None => format!("{base}{path}"),
     }
 }
@@ -149,9 +149,9 @@ pub(crate) fn app_not_connected<S>(
     provider: &str,
     display_name: &str,
     agent_name: Option<&str>,
-    project_id: Option<&str>,
+    workspace_id: Option<&str>,
 ) -> Response<ForwardBody<S>> {
-    let base = scoped_url(dashboard_url(), "", project_id);
+    let base = scoped_url(dashboard_url(), "", workspace_id);
     let connect_url = match agent_name {
         Some(name) => format!(
             "{base}/connections?connect={provider}&source=agent&agent_name={}",
@@ -178,9 +178,9 @@ pub(crate) fn app_not_connected_unknown_provider<S>(
     status: StatusCode,
     hostname: &str,
     agent_name: Option<&str>,
-    project_id: Option<&str>,
+    workspace_id: Option<&str>,
 ) -> Response<ForwardBody<S>> {
-    let base = scoped_url(dashboard_url(), "", project_id);
+    let base = scoped_url(dashboard_url(), "", workspace_id);
     let encoded_host = utf8_percent_encode(hostname, NON_ALPHANUMERIC);
     let connect_url = match agent_name {
         Some(name) => format!(
@@ -212,17 +212,17 @@ pub(crate) fn access_restricted<S>(
     status: StatusCode,
     provider: &str,
     display_name: &str,
-    project_id: Option<&str>,
+    workspace_id: Option<&str>,
 ) -> Response<ForwardBody<S>> {
     // Point at the app's connections page: since attach-model step 6 the
-    // project policy console is gone, and each account card there carries the
+    // workspace policy console is gone, and each account card there carries the
     // "Agent access" dialog — the surface that actually attaches a credential
     // to an agent. (Before step 6 this pointed at the policy console, which
     // was then the only place a grant could be authored.)
     let manage_url = scoped_url(
         dashboard_url(),
         &format!("/connections/apps/{provider}"),
-        project_id,
+        workspace_id,
     );
     with_no_retry(json_error(
         status,
@@ -244,9 +244,9 @@ pub(crate) fn credential_not_found<S>(
     status: StatusCode,
     hostname: &str,
     path: &str,
-    project_id: Option<&str>,
+    workspace_id: Option<&str>,
 ) -> Response<ForwardBody<S>> {
-    let base = scoped_url(dashboard_url(), "", project_id);
+    let base = scoped_url(dashboard_url(), "", workspace_id);
     let encoded_host = utf8_percent_encode(hostname, NON_ALPHANUMERIC);
     let secret_url =
         format!("{base}/connections/custom?create=generic&host={encoded_host}&path=%2F%2A");
@@ -406,13 +406,13 @@ pub(crate) fn blocked_by_policy<S>(
     method: &str,
     path: &str,
     rule_name: &str,
-    project_id: Option<&str>,
+    workspace_id: Option<&str>,
 ) -> Response<ForwardBody<S>> {
-    // The agents page: a project-scope block now comes from the agent's own
+    // The agents page: a workspace-scope block now comes from the agent's own
     // grants (changeable there) or from an organization guardrail (which a
-    // project member cannot change at all) — so the link informs rather than
+    // workspace member cannot change at all) — so the link informs rather than
     // promising an edit.
-    let agents_url = scoped_url(dashboard_url(), "/agents", project_id);
+    let agents_url = scoped_url(dashboard_url(), "/agents", workspace_id);
     with_no_retry(json_error(
         StatusCode::FORBIDDEN,
         serde_json::json!({
@@ -435,9 +435,9 @@ pub(crate) fn blocked_by_default_policy<S>(
     method: &str,
     path: &str,
     host: &str,
-    project_id: Option<&str>,
+    workspace_id: Option<&str>,
 ) -> Response<ForwardBody<S>> {
-    let agents_url = scoped_url(dashboard_url(), "/agents", project_id);
+    let agents_url = scoped_url(dashboard_url(), "/agents", workspace_id);
     let hostname = host.split(':').next().unwrap_or(host);
     with_no_retry(json_error(
         StatusCode::FORBIDDEN,
@@ -453,34 +453,6 @@ pub(crate) fn blocked_by_default_policy<S>(
             "host": hostname,
             "path": path,
             "dashboard_url": agents_url,
-        }),
-    ))
-}
-
-/// 403 Forbidden — the request targets an app that is not available to this
-/// project (the org's app-availability allowlist, step 7). Availability is an
-/// org-level, admin-managed posture, so — unlike the project-scoped policy
-/// blocks — there is no per-project dashboard deep link here.
-pub(crate) fn app_unavailable<S>(
-    provider: &str,
-    method: &str,
-    path: &str,
-    host: &str,
-) -> Response<ForwardBody<S>> {
-    let hostname = host.split(':').next().unwrap_or(host);
-    with_no_retry(json_error(
-        StatusCode::FORBIDDEN,
-        serde_json::json!({
-            "error": "app_unavailable",
-            "message": format!(
-                "The \"{provider}\" app is not available to this project. \
-                 {method} {hostname}{path} was blocked. An organization admin \
-                 can grant access on the App Availability page."
-            ),
-            "provider": provider,
-            "method": method,
-            "host": hostname,
-            "path": path,
         }),
     ))
 }
@@ -523,6 +495,35 @@ mod tests {
 
     type TestBody =
         ForwardBody<futures_util::stream::Empty<Result<hyper::body::Frame<Bytes>, reqwest::Error>>>;
+
+    // House copy style: no em dashes in user-facing text (the web app pins
+    // the same rule in ui-copy-guard.test.ts). Gateway refusal messages are
+    // relayed verbatim by agents into chat and Slack, so they are user-facing
+    // copy too. This scans THIS FILE's source for em dashes inside string
+    // literals — comments keep theirs (not copy).
+    #[test]
+    fn response_messages_hold_no_em_dashes() {
+        let source = include_str!("response.rs");
+        for (i, line) in source.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with('*') {
+                continue;
+            }
+            // Only flag lines where the dash sits inside a quoted run.
+            if line.contains('\u{2014}') {
+                let in_string = line
+                    .split('"')
+                    .enumerate()
+                    .any(|(idx, seg)| idx % 2 == 1 && seg.contains('\u{2014}'));
+                assert!(
+                    !in_string,
+                    "em dash in a user-facing message at response.rs:{}: {}",
+                    i + 1,
+                    line.trim()
+                );
+            }
+        }
+    }
 
     // A blank value must read as "unconfigured", not as a configured empty
     // string — otherwise every dashboard link becomes "/connections" with no
@@ -749,7 +750,7 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("does not have access"));
-        // Since attach-model step 6 the project policy console does not exist,
+        // Since attach-model step 6 the workspace policy console does not exist,
         // so the remediation link must reach a surface that can actually grant
         // the credential: the app's connections page, whose account cards carry
         // the "Agent access" dialog. A link ending in "/policy" would 404.

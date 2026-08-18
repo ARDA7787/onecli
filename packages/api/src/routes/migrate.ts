@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import type { ApiEnv } from "../types";
-import { authMiddleware, requireProjectId } from "../middleware/auth";
+import { authMiddleware, requireWorkspaceId } from "../middleware/auth";
 import { IS_CLOUD } from "../lib/env";
 import { exportToCloud } from "../services/migrate-export-service";
 import { logger } from "../lib/logger";
@@ -23,7 +23,7 @@ export const migrateRoutes = () => {
     }
 
     const auth = c.get("auth");
-    const projectId = requireProjectId(auth);
+    const workspaceId = requireWorkspaceId(auth);
 
     const body = await c.req.json().catch(() => null);
     const parsed = exportSchema.safeParse(body);
@@ -36,13 +36,13 @@ export const migrateRoutes = () => {
 
     const cloudUrl = parsed.data.cloudUrl ?? CLOUD_API_URL;
     const result = await exportToCloud(
-      projectId,
+      workspaceId,
       parsed.data.cloudApiKey,
       cloudUrl,
     );
 
     logger.info(
-      { projectId, imported: result.imported },
+      { workspaceId, imported: result.imported },
       "migration export completed",
     );
 

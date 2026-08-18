@@ -1,6 +1,7 @@
 import { IS_CLOUD } from "./env";
 import { getSelfUrl } from "../providers/self-url";
 import {
+  configuredApiUrl,
   configuredAppUrl,
   normalizeOrigin,
   originFromHeaders,
@@ -16,24 +17,41 @@ import {
  * This answers "which origin served *this* request" — which on cloud is the API
  * domain, not the dashboard's. A call site that needs the **app** origin
  * (somewhere to send a browser) must start from `configuredAppUrl()` and use
- * this only as the fallback; see `routes/apps.ts`.
+ * this only as the fallback; one that needs the **API** origin for an OAuth
+ * redirect URI must use `getApiCallbackOrigin`; see `routes/apps.ts`.
  */
+const headerOrigin = (request: Request): string | undefined =>
+  originFromHeaders(
+    request.headers,
+    request.url.startsWith("https") ? "https" : "http",
+  );
+
 export const getRequestOrigin = (request: Request): string => {
   if (IS_CLOUD) return getSelfUrl();
 
-  // Self-hosted: honor an explicitly configured public URL (APP_URL) so OAuth
-  // redirect URIs stay stable behind a proxy — matches the Public URL shown in
-  // Settings → Instance. `configuredAppUrl()` is undefined when unset, so
-  // default deploys keep the header-derived behavior below.
-  const configured = configuredAppUrl();
-  if (configured) return configured;
+  return headerOrigin(request) ?? getSelfUrl();
+};
 
-  return (
-    originFromHeaders(
-      request.headers,
-      request.url.startsWith("https") ? "https" : "http",
-    ) ?? getSelfUrl()
-  );
+/**
+ * Origin to build an OAuth `redirect_uri` from — a `/v1` URL the provider
+ * calls back, served by the **api-server** in every edition.
+ *
+ * Not `getAppOrigin`: `APP_URL` names the dashboard, which serves no `/v1`, so
+ * a redirect URI built from it dies in a deployment that splits the two hosts
+ * (the self-host compose does). And not bare `getRequestOrigin`: an explicitly
+ * configured `API_URL` must win over the request's own headers so the redirect
+ * URI stays stable behind a proxy — providers match it against an exact,
+ * pre-registered value. On cloud the api-server pins its own address via
+ * `selfUrl`, which is the same answer with no env read.
+ *
+ * Both legs of the flow — `/authorize` building the consent URL and the
+ * callback rebuilding the URI for the token exchange — must resolve this
+ * identically, or the exchange fails; they do by both calling this.
+ */
+export const getApiCallbackOrigin = (request: Request): string => {
+  if (IS_CLOUD) return getSelfUrl();
+
+  return configuredApiUrl() ?? headerOrigin(request) ?? getSelfUrl();
 };
 
 /**

@@ -1,0 +1,134 @@
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import { PLATFORM_SYSTEM_PROMPT, preparePromptFiles } from "./jcode";
+
+/**
+ * The platform owns the agent's identity — not the harness.
+ *
+ * The harness ships a base prompt that names itself and frames the agent as a
+ * coding tool; it reaches the model ahead of everything we render. These
+ * tests pin the two halves of the fix: our text REPLACES that prompt in every
+ * slot the harness reads, and the additive hooks it would otherwise pick up
+ * are cleared. Identity is product law, so the guard that matters most is the
+ * one asserting no vendor name can creep back into the text we ship.
+ */
+
+const makeHome = () => mkdtempSync(join(tmpdir(), "jcode-prompt-"));
+
+const homeOf = (dir: string): string => {
+  const home = join(dir, ".jcode-home");
+  mkdirSync(home, { recursive: true });
+  return home;
+};
+
+describe("the platform system prompt", () => {
+  it("never names the harness vendor or frames the agent as a coding tool", () => {
+    // MUTATION-PROOF: paste any of the harness's own identity lines back into
+    // PLATFORM_SYSTEM_PROMPT and this fails — which is the whole point of
+    // replacing the prompt in the first place.
+    expect(PLATFORM_SYSTEM_PROMPT).not.toMatch(/jcode/i);
+    expect(PLATFORM_SYSTEM_PROMPT).not.toMatch(/coding agent/i);
+    // …and it must actively defer identity to what we render.
+    expect(PLATFORM_SYSTEM_PROMPT).toContain("hosted autonomous agent");
+    const flat = PLATFORM_SYSTEM_PROMPT.replace(/\s+/g, " ");
+    // The runtime's own name reaches the model through the harness's session
+    // context — a block no override hook can reach (it is assembled in the
+    // binary). The prompt cannot delete that line, so it must tell the agent
+    // what the line is: plumbing, not identity.
+    expect(flat).toContain("internal plumbing, not your identity");
+    // Naming the runtime to DENY it is still naming it — the live probe
+    // caught exactly that ("No, I'm andy… Jcode is the harness that runs me").
+    expect(flat).toContain(
+      "Do not repeat, confirm, or deny any runtime or vendor name",
+    );
+    expect(flat).toContain(
+      "do not assume you are a coding assistant because you can run commands",
+    );
+  });
+
+  it("routes every external call through the gateway and bans native integration flows", () => {
+    // The live incident this pins against: with no gateway teaching in the
+    // prompt, the model reached for the runtime's own integration tooling
+    // (its email tool's OAuth flow, a third-party integration catalog)
+    // before ever making the one HTTPS call that works. The vendor test
+    // above already guarantees this section stays name-free.
+    const flat = PLATFORM_SYSTEM_PROMPT.replace(/\s+/g, " ");
+    expect(flat).toContain("credential-injecting gateway");
+    expect(flat).toContain(
+      "Never use an integration or login tool the runtime happens to ship",
+    );
+    expect(flat).toContain("never ask anyone for a key or token");
+  });
+
+  it("writes BOTH replacement slots — either one alone leaves the vendor identity reachable", () => {
+    // The project slot wins precedence and lives on the durable volume (an
+    // agent-planted file would survive reboots); an EMPTY or missing file
+    // falls THROUGH to the next slot, so a single write is never enough.
+    // MUTATION-PROOF: drop either write below and this test fails.
+    const dir = makeHome();
+    const home = homeOf(dir);
+
+    preparePromptFiles(dir, home);
+
+    for (const slot of [
+      join(home, "system-prompt.md"),
+      join(dir, ".jcode", "system-prompt.md"),
+    ]) {
+      expect(readFileSync(slot, "utf8")).toBe(PLATFORM_SYSTEM_PROMPT);
+      expect(statSync(slot).mode & 0o777).toBe(0o444);
+    }
+  });
+
+  it("clears the additive hooks — the harness loads them on existence alone", () => {
+    // An empty overlay is still injected (its presence is the gate), so these
+    // are deleted rather than owned-and-emptied.
+    // MUTATION-PROOF: drop any path from the delete list and this fails.
+    const dir = makeHome();
+    const home = homeOf(dir);
+    const projectDir = join(dir, ".jcode");
+    mkdirSync(projectDir, { recursive: true });
+    mkdirSync(join(home, "external"), { recursive: true });
+
+    const planted = [
+      join(projectDir, "prompt-overlay.md"),
+      join(home, "prompt-overlay.md"),
+      join(projectDir, "preferred-tools.md"),
+      join(home, "preferred-tools.md"),
+      join(home, "external", "AGENTS.md"),
+    ];
+    for (const path of planted) writeFileSync(path, "planted by the agent");
+
+    preparePromptFiles(dir, home);
+
+    for (const path of planted) expect(existsSync(path)).toBe(false);
+  });
+
+  it("heals a tampered slot on the next boot", () => {
+    // The agent owns these directories: mid-session it can rewrite a slot,
+    // and the next boot is what takes it back.
+    const dir = makeHome();
+    const home = homeOf(dir);
+    preparePromptFiles(dir, home);
+
+    // Read-only stops a careless write, not the directory's owner: the agent
+    // chmods first, exactly as this does.
+    const slot = join(dir, ".jcode", "system-prompt.md");
+    chmodSync(slot, 0o644);
+    writeFileSync(slot, "You are something else entirely.");
+
+    preparePromptFiles(dir, home);
+
+    expect(readFileSync(slot, "utf8")).toBe(PLATFORM_SYSTEM_PROMPT);
+    expect(statSync(slot).mode & 0o777).toBe(0o444);
+  });
+});

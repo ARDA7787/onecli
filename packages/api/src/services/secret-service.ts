@@ -1,6 +1,7 @@
 import { db, Prisma } from "@onecli/db";
 import { getCrypto } from "../providers";
 import { ServiceError } from "./errors";
+import { attachLlmKeyToKeylessAgents } from "./llm-autoattach-service";
 import type { ResourceScope } from "./resource-scope";
 import { scopeWhere, scopeCreate, scopeOwnership } from "./resource-scope";
 import {
@@ -154,9 +155,38 @@ export const listSecrets = async (scope: ResourceScope) => {
   }));
 };
 
+/**
+ * Hand a newly created LLM key to the agents that can reach no key at all —
+ * the other half of the auto-attach (see `llm-autoattach-service`). Applied to
+ * BOTH creation arms (inline and 1Password): where the value is stored is
+ * irrelevant to whether an agent may use it.
+ *
+ * Workspace scope only. An ORG-level key is reachable by every workspace in
+ * the org, and quietly granting it across all of them is a widening nobody
+ * asked for; org keys stay an explicit attach.
+ *
+ * Best-effort by contract: the key is already created, and a convenience
+ * grant must never turn that into a failed request.
+ */
+const attachNewKey = async (
+  scope: ResourceScope,
+  secretId: string,
+  userId: string | null,
+): Promise<string[]> => {
+  if (!scope.workspaceId) return [];
+  const { agentIds } = await attachLlmKeyToKeylessAgents(
+    scope.workspaceId,
+    secretId,
+    userId,
+  ).catch(() => ({ agentIds: [] as string[] }));
+  return agentIds;
+};
+
 export const createSecret = async (
   scope: ResourceScope,
   input: CreateSecretInput,
+  /** Who to record as the grantor of any auto-attached grant. */
+  userId: string | null = null,
 ) => {
   const name = input.name.trim();
   if (!name || name.length > 255) {
@@ -196,14 +226,14 @@ export const createSecret = async (
 
   // ── Value resolved from 1Password at request time (nothing stored in PG) ──
   if (valueSource === "onepassword") {
-    // 1Password connections are per-project: the gateway resolves op:// refs via
-    // the requesting agent's project connection. An org/partner-scoped secret
-    // has no single project, so its value would silently fail to resolve —
+    // 1Password connections are per-workspace: the gateway resolves op:// refs via
+    // the requesting agent's workspace connection. An org-scoped secret
+    // has no single workspace, so its value would silently fail to resolve —
     // reject it here instead of creating a secret that can never inject.
-    if (!scope.projectId) {
+    if (!scope.workspaceId) {
       throw new ServiceError(
         "BAD_REQUEST",
-        "1Password is only available for project-scoped secrets",
+        "1Password is only available for workspace-scoped secrets",
       );
     }
     if (!input.opRef) {
@@ -213,7 +243,7 @@ export const createSecret = async (
     if (input.type === "anthropic") hostPattern = "api.anthropic.com";
     if (input.type === "openai") hostPattern = "api.openai.com";
 
-    return db.secret.create({
+    const opSecret = await db.secret.create({
       data: {
         name,
         type: input.type,
@@ -237,6 +267,11 @@ export const createSecret = async (
         createdAt: true,
       },
     });
+
+    return {
+      ...opSecret,
+      attachedAgents: await attachNewKey(scope, opSecret.id, userId),
+    };
   }
 
   // ── Inline value (encrypted at rest) ──
@@ -273,7 +308,11 @@ export const createSecret = async (
     },
   });
 
-  return { ...secret, preview: buildPreview(value) };
+  return {
+    ...secret,
+    preview: buildPreview(value),
+    attachedAgents: await attachNewKey(scope, secret.id, userId),
+  };
 };
 
 export const deleteSecret = async (scope: ResourceScope, secretId: string) => {
@@ -308,13 +347,13 @@ export const updateSecret = async (
   }
 
   if (input.valueSource === "onepassword") {
-    // Switch to / update a value resolved from 1Password. Per-project only, as in
-    // createSecret: the gateway resolves op:// refs via the agent's project
-    // connection, so org/partner scope has no connection to resolve through.
-    if (!scope.projectId) {
+    // Switch to / update a value resolved from 1Password. Per-workspace only, as in
+    // createSecret: the gateway resolves op:// refs via the agent's workspace
+    // connection, so org scope has no connection to resolve through.
+    if (!scope.workspaceId) {
       throw new ServiceError(
         "BAD_REQUEST",
-        "1Password is only available for project-scoped secrets",
+        "1Password is only available for workspace-scoped secrets",
       );
     }
     if (!input.opRef)

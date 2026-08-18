@@ -28,7 +28,7 @@ interface MigrateResult {
  * leaves the server process or reaches the caller.
  */
 export const exportToCloud = async (
-  projectId: string,
+  workspaceId: string,
   cloudApiKey: string,
   cloudUrl: string,
 ): Promise<MigrateResult> => {
@@ -45,7 +45,7 @@ export const exportToCloud = async (
   // success and land on a destination that enforces nothing they authored.
   const [secrets, agents, policyRuleCount] = await Promise.all([
     db.secret.findMany({
-      where: { projectId },
+      where: { workspaceId },
       select: {
         name: true,
         type: true,
@@ -58,21 +58,19 @@ export const exportToCloud = async (
       },
     }),
     db.agent.findMany({
-      where: { projectId },
+      where: { workspaceId },
       select: {
         name: true,
         identifier: true,
-        isDefault: true,
-        secretMode: true,
       },
     }),
-    // The project's own enabled draft rules — what the user authored, minus the
+    // The workspace's own enabled draft rules — what the user authored, minus the
     // Default Rule and the rows their own surface owns (blocklist) or that are
     // credential grants rather than policy (equipment).
     db.policyRuleV2.count({
       where: {
-        scope: "project",
-        projectId,
+        scope: "workspace",
+        workspaceId,
         status: "draft",
         isDefault: false,
         source: { notIn: ["blocklist", "equipment", "grant"] },
@@ -87,7 +85,7 @@ export const exportToCloud = async (
             type: "policy",
             name: `${policyRuleCount} policy rule${policyRuleCount === 1 ? "" : "s"}`,
             reason:
-              "Not migrated — policy does not travel with a migration yet. " +
+              "Not migrated: policy does not travel with a migration yet. " +
               "Re-author these rules in the destination's Policy console.",
           },
         ]
@@ -110,7 +108,7 @@ export const exportToCloud = async (
       type: s.type,
       name: s.name,
       reason:
-        "Sourced from 1Password — reconnect 1Password and re-add this secret after migrating",
+        "Sourced from 1Password. Reconnect 1Password and re-add this secret after migrating",
     }));
 
   const decryptedSecrets = await Promise.all(
@@ -142,8 +140,6 @@ export const exportToCloud = async (
       .map((a) => ({
         name: a.name,
         identifier: a.identifier!,
-        isDefault: a.isDefault,
-        secretMode: a.secretMode as "all" | "selective",
       })),
   };
 

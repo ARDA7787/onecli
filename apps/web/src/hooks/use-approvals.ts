@@ -10,10 +10,10 @@ import {
   type PendingApproval,
 } from "@/lib/api/approvals";
 import { queryKeys } from "@/lib/api/keys";
-import { hasProjectContext } from "@/lib/navigation";
+import { hasWorkspaceContext } from "@/lib/navigation";
 
 /**
- * Live list of pending approvals for the active project.
+ * Live list of pending approvals for the active workspace.
  *
  * The gateway long-polls `GET /v1/approvals/pending` (holds ~30s while idle),
  * so this is effectively a long-poll driven by React Query: a small
@@ -21,8 +21,8 @@ import { hasProjectContext } from "@/lib/navigation";
  * React Query dedupes concurrent fetches so the held request is never doubled.
  * Net result — idle pages hold one ~30s connection; while approvals are pending
  * the gateway returns immediately and we poll ~1s (snappy add/remove). Only runs
- * where a project context exists (project pages in URL-scoped editions; every
- * dashboard page in single-project editions) and pauses in background tabs.
+ * where a workspace context exists (workspace pages in URL-scoped editions; every
+ * dashboard page in single-workspace editions) and pauses in background tabs.
  */
 export const usePendingApprovals = () => {
   const pathname = usePathname();
@@ -33,7 +33,7 @@ export const usePendingApprovals = () => {
       listPending({
         signal: AbortSignal.any([signal, AbortSignal.timeout(35_000)]),
       }),
-    enabled: hasProjectContext(pathname),
+    enabled: hasWorkspaceContext(pathname),
     // When the list is empty the gateway holds the request ~30s and returns the
     // instant a new approval appears — a true long-poll, so poll fast (1s). But
     // while approvals are already pending the endpoint returns immediately, so

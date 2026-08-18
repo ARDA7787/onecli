@@ -1,14 +1,15 @@
 /**
- * Resolving "where does this instance live?" — the two primitives every
+ * Resolving "where does this instance live?" — the primitives every
  * origin-dependent call site composes.
  *
- * The rule, applied everywhere: the app origin is the **explicitly configured**
- * `APP_URL`; failing that, the origin of the request in hand; failing that, the
- * caller's own last resort.
+ * The rule, applied everywhere: an **explicitly configured** URL wins —
+ * `APP_URL` for anything a browser will visit, `API_URL` for anything the
+ * api-server answers (OAuth redirect URIs); failing that, the origin of the
+ * request in hand; failing that, the caller's own last resort.
  *
  * The distinction that matters is *configured* vs *defaulted*: `lib/env.ts`
- * gives `APP_URL` a `http://localhost:10254` fallback, so that constant can
- * never be falsy and can never tell the two apart. Reading it as a
+ * gives `APP_URL` and `API_URL` localhost fallbacks, so those constants can
+ * never be falsy and can never tell the two apart. Reading one as a
  * configured-or-not signal silently strands self-hosters on localhost — see
  * `configuredAppUrl` below.
  */
@@ -63,6 +64,24 @@ export const configuredAppUrl = (): string | undefined =>
   firstConfigured(
     process.env.APP_URL,
     process.env.NEXT_PUBLIC_APP_URL,
+  )?.replace(/\/+$/, "");
+
+/**
+ * The public **api-server** URL the operator explicitly configured, or
+ * `undefined` when they configured none.
+ *
+ * The sibling of `configuredAppUrl` for the other host: OAuth `redirect_uri`s
+ * are `/v1` URLs the provider calls back, so they must resolve from the API
+ * origin — never from `APP_URL`, which names the dashboard and serves no `/v1`
+ * when the two are split. Pinning `API_URL` keeps the redirect URI stable
+ * against exact-match provider registration; unset, callers fall back to the
+ * origin the request arrived on. Same configured-vs-defaulted semantics as
+ * `configuredAppUrl` (blank counts as unconfigured; trailing slashes stripped).
+ */
+export const configuredApiUrl = (): string | undefined =>
+  firstConfigured(
+    process.env.API_URL,
+    process.env.NEXT_PUBLIC_API_URL,
   )?.replace(/\/+$/, "");
 
 /**

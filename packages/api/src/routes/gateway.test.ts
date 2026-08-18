@@ -3,10 +3,10 @@ import { Hono } from "hono";
 import { gatewayUrlRoutes } from "./gateway";
 import { GATEWAY_API_URL } from "../lib/env";
 
-// Regression lock for the onprem-slim discovery 401: an org key with no project
-// hit the project-requiring auth middleware and got a 401. GET /v1/gateway-url
+// Regression lock for the org-key discovery 401: an org key with no workspace
+// hit the workspace-requiring auth middleware and got a 401. GET /v1/gateway-url
 // is a public bootstrap endpoint — it must return the gateway URL for ANY
-// caller (no credentials, or an org key carrying no project) and never 401
+// caller (no credentials, or an org key carrying no workspace) and never 401
 // again. Mirrors the unauthenticated `/gateway/ca` sibling.
 describe("gateway-url route", () => {
   const mount = () => new Hono().route("/gateway-url", gatewayUrlRoutes());
@@ -18,7 +18,7 @@ describe("gateway-url route", () => {
     expect(await res.json()).toEqual({ url: GATEWAY_API_URL });
   });
 
-  it("does not 401 for an org key with no project (the reported scenario)", async () => {
+  it("does not 401 for an org key with no workspace (the reported scenario)", async () => {
     const res = await mount().request("/gateway-url", {
       headers: { authorization: "Bearer oc_org_anything" },
     });

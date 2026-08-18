@@ -56,7 +56,6 @@ import {
   AppTargetFields,
   type AppTargetState,
 } from "./_components/app-target-fields";
-import { isCloudOnlyApp } from "./_components/app-select";
 import {
   SecretTargetFields,
   type SecretTargetState,
@@ -100,11 +99,11 @@ const emptyDerived = (): DerivedTarget => ({
     provider: "",
     mode: "specific",
     connectionIds: [],
-    level: "project",
+    level: "workspace",
     tools: [],
     sessionPolicy: null,
   },
-  secret: { mode: "specific", secretIds: [], level: "project" },
+  secret: { mode: "specific", secretIds: [], level: "workspace" },
   locked: false,
 });
 
@@ -238,7 +237,7 @@ const deriveTarget = (
         provider,
         mode: "specific",
         connectionIds: connTargets,
-        level: "project",
+        level: "workspace",
         tools: connTools,
         // A SINGLE connection's object conditions are its granular session policy;
         // multi-connection / behavioral-array conditions carry no resource scope.
@@ -262,7 +261,11 @@ const deriveTarget = (
       ...base,
       locked,
       kind: "secret",
-      secret: { mode: "specific", secretIds: secretSpecific, level: "project" },
+      secret: {
+        mode: "specific",
+        secretIds: secretSpecific,
+        level: "workspace",
+      },
     };
   }
   if (networkT && networkT.kind === "network") {
@@ -300,17 +303,17 @@ export const PolicyRuleForm = ({
   onOpenChange,
 }: PolicyRuleFormProps) => {
   const isEdit = rule !== null;
-  // Agents are project-scoped; at org scope there's no project context to load
+  // Agents are workspace-scoped; at org scope there's no workspace context to load
   // them (and org guardrails apply to all agents).
   // Org scope is the only scope this form serves since attach-model step 6.
   const { data: connections = [] } = useConnections(scope);
   // Scope-aware secrets for the Secret target picker: the org page reads
-  // /v1/org/secrets (the project-scoped /v1/secrets 401s at org scope — no
-  // X-Project-Id) and returns the org's/project's OWN secrets (no partner).
+  // /v1/org/secrets (the workspace-scoped /v1/secrets 401s at org scope — no
+  // X-Workspace-Id) and returns the org's/workspace's OWN secrets.
   const { data: secrets = [] } = useScopedSecrets(scope);
-  // A rule may only reference resources OWNED at its own level — a PROJECT rule
-  // its project's, an ORG rule the org's (`assertTargetsValid` 422s a cross-level
-  // pick). Org resources are governed at the org level, so a project's config
+  // A rule may only reference resources OWNED at its own level — a WORKSPACE rule
+  // its workspace's, an ORG rule the org's (`assertTargetsValid` 422s a cross-level
+  // pick). Org resources are governed at the org level, so a workspace's config
   // never even sees them. Filter both pickers to what's actually saveable.
   const targetScope = "organization" as const;
   const scopedSecrets = secrets.filter((s) => s.scope === targetScope);
@@ -362,7 +365,7 @@ export const PolicyRuleForm = ({
       ? []
       : ((rule?.conditions ?? []) as RuleCondition[]),
   );
-  // Project rules carry at most one agent identity (or none = all agents); the
+  // Workspace rules carry at most one agent identity (or none = all agents); the
   // Select below reads/writes it. Org rules use the multi-kind picker directly.
   // A granular App target: an ALLOW on exactly one specific connection whose
   // resource scope (session policy) is set — its `conditions` carry that policy,
@@ -432,13 +435,6 @@ export const PolicyRuleForm = ({
     if (trimmed.length > 255) return "Name is too long.";
     return null;
   }, [name]);
-  // The selected app is cloud-only in this edition (OSS's EE-stub registry):
-  // the target would be dead (the OSS gateway's base catalog can't resolve
-  // it), so the save locks and AppTargetFields renders the locked callout.
-  // A target-locked rule is exempt — its targets are preserved as-is and the
-  // save edits modifiers only.
-  const appCloudLocked =
-    targetKind === "app" && !targetLocked && isCloudOnlyApp(appTarget.provider);
   const targetError = useMemo(() => {
     // A locked rule's targets are read-only and preserved as-is — nothing to
     // validate (and the fieldset is disabled).
@@ -456,9 +452,6 @@ export const PolicyRuleForm = ({
     // App: a provider is required; specific mode needs ≥1 connection, "all" mode
     // always has a level.
     if (!appTarget.provider) return "Select an app.";
-    // Cloud-only app: the locked callout owns the messaging (and the save is
-    // disabled), so the connection-count error would only mislead.
-    if (isCloudOnlyApp(appTarget.provider)) return null;
     if (appTarget.mode === "specific")
       return appTarget.connectionIds.length > 0
         ? null
@@ -470,7 +463,7 @@ export const PolicyRuleForm = ({
   const showHostError = showTargetError && targetKind === "network";
   // Modifiers are only valid on Allow (mirrors the server's 422).
   const modifiersDisabled = action === "block";
-  const isValid = !nameError && !targetError && !appCloudLocked;
+  const isValid = !nameError && !targetError;
 
   const handleSubmit = async () => {
     setSubmitAttempted(true);
@@ -693,7 +686,6 @@ export const PolicyRuleForm = ({
                       isOrgRule
                       action={action}
                       hasBehavioralConditions={conditions.length > 0}
-                      cloudLocked={appCloudLocked}
                       showError={!!showTargetError}
                       error={targetError}
                     />
@@ -893,7 +885,7 @@ export const PolicyRuleForm = ({
                 (so no note is shown then). */}
               {targetKind === "secret" && (
                 <p className="text-xs text-muted-foreground">
-                  Conditions don&apos;t apply to this target type — it matches
+                  Conditions don&apos;t apply to this target type. It matches
                   its hosts regardless of request content.
                 </p>
               )}
@@ -901,7 +893,7 @@ export const PolicyRuleForm = ({
                 appTarget.tools.length === 0 &&
                 appTarget.mode === "all" && (
                   <p className="text-xs text-muted-foreground">
-                    Conditions don&apos;t apply to a whole-app target — it
+                    Conditions don&apos;t apply to a whole-app target. It
                     matches the app&apos;s hosts regardless of request content.
                   </p>
                 )}
@@ -917,7 +909,7 @@ export const PolicyRuleForm = ({
               <p className="text-xs text-muted-foreground">
                 This rule has {conditions.length} request-content condition
                 {conditions.length === 1 ? "" : "s"} that aren&apos;t editable
-                here — they&apos;re preserved unchanged when you save.
+                here. They&apos;re preserved unchanged when you save.
               </p>
             )}
         </div>
@@ -930,11 +922,7 @@ export const PolicyRuleForm = ({
           >
             Cancel
           </Button>
-          <Button
-            onClick={handleSubmit}
-            loading={saving}
-            disabled={appCloudLocked}
-          >
+          <Button onClick={handleSubmit} loading={saving}>
             {saving
               ? isEdit
                 ? "Saving…"

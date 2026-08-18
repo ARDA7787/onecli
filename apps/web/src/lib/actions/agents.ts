@@ -1,13 +1,11 @@
 "use server";
 
-import { resolveProjectContext } from "@/lib/actions/resolve-user";
+import { resolveWorkspaceContext } from "@/lib/actions/resolve-user";
 import {
   listAgents,
-  getDefaultAgent as getDefaultAgentService,
-  setDefaultAgent as setDefaultAgentService,
   createAgent as createAgentService,
   deleteAgent as deleteAgentService,
-  renameAgent as renameAgentService,
+  updateAgent as updateAgentService,
   regenerateAgentToken as regenerateAgentTokenService,
 } from "@onecli/api/services/agent-service";
 import {
@@ -17,21 +15,16 @@ import {
 } from "@onecli/api/services/audit-service";
 
 export const getAgents = async () => {
-  const { projectId } = await resolveProjectContext();
-  return listAgents(projectId);
-};
-
-export const getDefaultAgent = async () => {
-  const { projectId } = await resolveProjectContext();
-  return getDefaultAgentService(projectId);
+  const { workspaceId } = await resolveWorkspaceContext();
+  return listAgents(workspaceId);
 };
 
 export const createAgent = async (name: string, identifier: string) => {
-  const { userId, userEmail, projectId } = await resolveProjectContext();
+  const { userId, userEmail, workspaceId } = await resolveWorkspaceContext();
   return withAudit(
-    () => createAgentService(projectId, name, identifier),
+    () => createAgentService(workspaceId, { name, identifier }, userId),
     (agent) => ({
-      projectId,
+      workspaceId,
       userId,
       userEmail,
       action: AUDIT_ACTIONS.CREATE,
@@ -41,27 +34,12 @@ export const createAgent = async (name: string, identifier: string) => {
   );
 };
 
-export const setDefaultAgent = async (agentId: string): Promise<void> => {
-  const { userId, userEmail, projectId } = await resolveProjectContext();
-  return withAudit(
-    () => setDefaultAgentService(projectId, agentId),
-    () => ({
-      projectId,
-      userId,
-      userEmail,
-      action: AUDIT_ACTIONS.UPDATE,
-      service: AUDIT_SERVICES.AGENT,
-      metadata: { agentId, change: "set-default" },
-    }),
-  );
-};
-
 export const deleteAgent = async (agentId: string): Promise<void> => {
-  const { userId, userEmail, projectId } = await resolveProjectContext();
+  const { userId, userEmail, workspaceId } = await resolveWorkspaceContext();
   return withAudit(
-    () => deleteAgentService(projectId, agentId),
+    () => deleteAgentService(workspaceId, agentId),
     () => ({
-      projectId,
+      workspaceId,
       userId,
       userEmail,
       action: AUDIT_ACTIONS.DELETE,
@@ -75,11 +53,11 @@ export const renameAgent = async (
   agentId: string,
   name: string,
 ): Promise<void> => {
-  const { userId, userEmail, projectId } = await resolveProjectContext();
+  const { userId, userEmail, workspaceId } = await resolveWorkspaceContext();
   return withAudit(
-    () => renameAgentService(projectId, agentId, name),
+    () => updateAgentService(workspaceId, agentId, { name }),
     () => ({
-      projectId,
+      workspaceId,
       userId,
       userEmail,
       action: AUDIT_ACTIONS.UPDATE,
@@ -90,11 +68,11 @@ export const renameAgent = async (
 };
 
 export const regenerateAgentToken = async (agentId: string) => {
-  const { userId, userEmail, projectId } = await resolveProjectContext();
+  const { userId, userEmail, workspaceId } = await resolveWorkspaceContext();
   return withAudit(
-    () => regenerateAgentTokenService(projectId, agentId),
+    () => regenerateAgentTokenService(workspaceId, agentId),
     () => ({
-      projectId,
+      workspaceId,
       userId,
       userEmail,
       action: AUDIT_ACTIONS.REGENERATE,
