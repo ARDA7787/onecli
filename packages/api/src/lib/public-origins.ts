@@ -585,3 +585,31 @@ export const configuredApiUrl = (): string | undefined => {
   const resolved = resolveOriginsFromEnv();
   return resolved.sources.api.source === "default" ? undefined : resolved.api;
 };
+
+
+/**
+ * The browser origin to answer a credentialed CORS preflight with — or
+ * `undefined` when this deployment does not trust it.
+ *
+ * Same set the auth layer already trusts (`buildTrustedOrigins`): the
+ * dashboard origin, its loopback twin, any `ONECLI_TRUSTED_ORIGINS` extras,
+ * and the split-host api origin. Reflecting an arbitrary `Origin` back
+ * alongside `credentials: true` would make every site the user's browser
+ * visits an ambient caller of this API, with the session cookie's
+ * `SameSite=lax` as the only remaining fence.
+ *
+ * Fail-*closed*, unlike `normalizeOrigin`'s other callers: an unlisted origin
+ * gets no `Access-Control-Allow-Origin` header at all — never a wildcard, and
+ * never the requested origin echoed back.
+ */
+export const isTrustedBrowserOrigin = (
+  origin: string | undefined,
+): string | undefined => {
+  const normalized = normalizeOrigin(origin);
+  if (!normalized) return undefined;
+  const { origins } = buildTrustedOrigins(
+    resolveOriginsFromEnv(),
+    process.env.ONECLI_TRUSTED_ORIGINS,
+  );
+  return origins.includes(normalized) ? normalized : undefined;
+};
