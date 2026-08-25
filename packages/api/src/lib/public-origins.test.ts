@@ -7,6 +7,7 @@ import {
   configuredApiUrl,
   configuredAppUrl,
   formatOriginsBanner,
+  isTrustedBrowserOrigin,
   resolveOriginsFromEnv,
   resolvePublicOrigins,
 } from "./public-origins";
@@ -446,6 +447,71 @@ describe("env wrapper and facades", () => {
     expect(configuredApiUrl()).toBe("http://192.0.2.10:10256");
     process.env.ONECLI_EXTERNAL_URL = "https://onecli.acme.com";
     expect(configuredApiUrl()).toBe("https://onecli.acme.com");
+  });
+});
+
+describe("isTrustedBrowserOrigin", () => {
+  const orig: Record<string, string | undefined> = {};
+  for (const key of ENV_KEYS) orig[key] = process.env[key];
+  afterEach(() => {
+    for (const key of ENV_KEYS) {
+      if (orig[key] === undefined) delete process.env[key];
+      else process.env[key] = orig[key];
+    }
+  });
+  const clearAll = () => {
+    for (const key of ENV_KEYS) delete process.env[key];
+  };
+
+  it("echoes the configured app origin", () => {
+    clearAll();
+    process.env.ONECLI_EXTERNAL_URL = "https://onecli.acme.com";
+    expect(isTrustedBrowserOrigin("https://onecli.acme.com")).toBe(
+      "https://onecli.acme.com",
+    );
+  });
+
+  it("rejects an arbitrary origin", () => {
+    clearAll();
+    process.env.ONECLI_EXTERNAL_URL = "https://onecli.acme.com";
+    expect(isTrustedBrowserOrigin("https://evil.example")).toBeUndefined();
+  });
+
+  it("rejects an absent or empty origin", () => {
+    clearAll();
+    expect(isTrustedBrowserOrigin(undefined)).toBeUndefined();
+    expect(isTrustedBrowserOrigin("")).toBeUndefined();
+  });
+
+  it("rejects a malformed origin", () => {
+    clearAll();
+    expect(isTrustedBrowserOrigin("not-an-origin")).toBeUndefined();
+    expect(isTrustedBrowserOrigin("javascript:alert(1)")).toBeUndefined();
+  });
+
+  it("does not match on a host prefix or suffix", () => {
+    clearAll();
+    process.env.ONECLI_EXTERNAL_URL = "https://onecli.acme.com";
+    expect(
+      isTrustedBrowserOrigin("https://onecli.acme.com.evil.example"),
+    ).toBeUndefined();
+    expect(isTrustedBrowserOrigin("https://evil-onecli.acme.com")).toBeUndefined();
+  });
+
+  it("accepts an ONECLI_TRUSTED_ORIGINS extra", () => {
+    clearAll();
+    process.env.ONECLI_EXTERNAL_URL = "http://192.0.2.10:10254";
+    process.env.ONECLI_TRUSTED_ORIGINS = "http://192.168.1.50:10254";
+    expect(isTrustedBrowserOrigin("http://192.168.1.50:10254")).toBe(
+      "http://192.168.1.50:10254",
+    );
+  });
+
+  it("accepts the loopback twin of a zero-config install", () => {
+    clearAll();
+    expect(isTrustedBrowserOrigin("http://127.0.0.1:10254")).toBe(
+      "http://127.0.0.1:10254",
+    );
   });
 });
 
