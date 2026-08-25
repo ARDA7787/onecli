@@ -4,7 +4,11 @@ import { createApiApp } from "@onecli/api";
 import { createScimApp } from "@onecli/api/ee/scim";
 import { eeSessionHooks } from "@onecli/api/ee/auth/session-hooks";
 import { IS_CLOUD } from "@onecli/api/lib/env";
-import { apiOrigin, appOrigin } from "@onecli/api/lib/public-origins";
+import {
+  apiOrigin,
+  appOrigin,
+  isTrustedBrowserOrigin,
+} from "@onecli/api/lib/public-origins";
 import { LEGACY_PROJECT_HEADER } from "@onecli/api/lib/legacy-project-compat";
 import {
   BETTER_AUTH_BASE_PATH,
@@ -34,13 +38,15 @@ const apiApp = createApiApp(
 
 export const app = new Hono();
 
-// Cloud pins the dashboard origin; self-host mirrors the request origin (the
-// dashboard's host/port isn't knowable at image build time — the same posture
-// as the gateway's control-plane CORS).
+// Cloud pins the dashboard origin. Self-host resolves the same trusted set the
+// auth layer uses (derived app/api origins, loopback twins, and any
+// ONECLI_TRUSTED_ORIGINS extras) rather than mirroring whatever Origin arrived:
+// with `credentials: true`, reflecting an arbitrary origin is ambient trust.
+// An install at an address none of those yield must list it explicitly.
 app.use(
   "*",
   cors({
-    origin: IS_CLOUD ? [appUrl] : (origin) => origin,
+    origin: IS_CLOUD ? [appUrl] : (origin) => isTrustedBrowserOrigin(origin) ?? null,
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowHeaders: [
       "Authorization",
