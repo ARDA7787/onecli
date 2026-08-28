@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.3.0](https://github.com/onecli/onecli/compare/v2.2.3...v2.3.0) (2026-08-28)
+
+
+### Features
+
+* shared Slack app - team onboarding from Slack ([#523](https://github.com/onecli/onecli/issues/523)) ([8d4381c](https://github.com/onecli/onecli/commit/8d4381c2a40e0b662976313644caccc678dc83e0))
+* Snowflake integration, platform Anthropic trial credit, Slack CDN redirect fix ([#528](https://github.com/onecli/onecli/issues/528)) ([4b94687](https://github.com/onecli/onecli/commit/4b94687e1727b2d74228d0e111045fe98c479505))
+
+## [2.2.3](https://github.com/onecli/onecli/compare/v2.2.2...v2.2.3) (2026-08-26)
+
+
+### Bug Fixes
+
+* per-conversation jcode sessions + busy self-heal, agent report-back contract, standalone ssh-terminator app ([#518](https://github.com/onecli/onecli/issues/518)) ([c536924](https://github.com/onecli/onecli/commit/c536924594886d7a93101397cddf74073379bfaa))
+* self-host SSH docker backend + default-on provisioning, one-shot schedules, visible swarm/watch wakes ([#522](https://github.com/onecli/onecli/issues/522)) ([1a9f721](https://github.com/onecli/onecli/commit/1a9f72125ffd365eb72eb81620da6c0a7d903f6c))
+
 ## [2.2.2](https://github.com/onecli/onecli/compare/v2.2.1...v2.2.2) (2026-08-25)
 
 

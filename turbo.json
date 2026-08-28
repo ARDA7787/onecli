@@ -66,6 +66,8 @@
     "LOG_LEVEL",
     "LOG_FORMAT",
     "MAX_ORGS_PER_USER",
+    "PLATFORM_ANTHROPIC_API_KEY",
+    "PLATFORM_ANTHROPIC_CREDIT_CENTS",
     "MAILERCHECK_API_KEY",
     "DISCORD_WEBHOOK_URL",
     "DISCORD_REVIEW_WEBHOOK_URL",
@@ -167,6 +169,8 @@
     "SSH_CA_KMS_KEY_ARN",
     "SSH_CA_PRIVATE_KEY",
     "SSH_HOST",
+    "SSH_PORT",
+    "ONECLI_DOCKER_E2E",
     "SSH_CERT_TTL_SECONDS",
     "SSH_CERT_MINTS_PER_HOUR",
     "SSH_MAX_SESSIONS_PER_AGENT",
@@ -175,6 +179,12 @@
     "SSH_SESSION_LEASE_SECONDS",
     "CONTROL_PLANE_URL",
     "SLACK_API_BASE_URL",
+    "SLACK_CDN_BASE_URL",
+    "SLACK_SHARED_CLIENT_ID",
+    "SLACK_SHARED_CLIENT_SECRET",
+    "SLACK_SHARED_SIGNING_SECRET",
+    "SLACK_SHARED_APP_ID",
+    "SLACK_SHARED_APP_MANAGER_APPROVED",
     "ANTHROPIC_API_BASE_URL",
     "OPENAI_API_BASE_URL",
     "CI"
@@ -188,6 +198,11 @@
     "@onecli/gateway#build": {
       "inputs": ["src/**", "Cargo.toml", "Cargo.lock"],
       "outputs": ["target/release/**"]
+    },
+    "@onecli/ssh-terminator#dev": {
+      "cache": false,
+      "persistent": true,
+      "passThroughEnv": ["TERMINATOR_*"]
     },
     "@onecli/gateway#dev": {
       "cache": false,

@@ -15,7 +15,7 @@ import {
 } from "@onecli/agent-protocol";
 import type { SupervisorConfig } from "./config";
 import { log } from "./log";
-import { isProviderRefusal } from "./provider-refusal";
+import { isProviderRefusal, isTrialCreditExhausted } from "./provider-refusal";
 import { renderHome, type RenderInputs } from "./home/renderer";
 import { applyHomeSync } from "./home/materializer";
 import {
@@ -428,6 +428,9 @@ export const runSupervisor = async (
       ...(config.effort && { effort: config.effort }),
       ...(resumeSessionRef &&
         harness.capabilities.resume && { resumeSessionRef }),
+      // Anchoring, not authority: lets the adapter attribute session-scoped
+      // harness events (a wake request between turns) to this conversation.
+      context: { conversationId },
     });
     runtime.session = session;
     log("info", "harness session started", {
@@ -494,13 +497,25 @@ export const runSupervisor = async (
       failureCode(runtime) ??
       (terminalErrorCode === TURN_FAILURE_CODES.harnessBusy
         ? TURN_FAILURE_CODES.harnessBusy
-        : raw && isProviderRefusal(raw)
-          ? TURN_FAILURE_CODES.modelProviderError
-          : undefined);
+        : raw && isTrialCreditExhausted(raw)
+          ? TURN_FAILURE_CODES.trialCreditExhausted
+          : raw && isProviderRefusal(raw)
+            ? TURN_FAILURE_CODES.modelProviderError
+            : undefined);
 
     /** Everything the agent said this turn, rebuilt from the deltas. */
     let answer = "";
     let answerSent = false;
+    /**
+     * A tool batch or a thinking block between text deltas marks a message
+     * boundary — the model ended one message and later started another. The
+     * raw concatenation glued them mid-sentence ("…a different address?Got
+     * it — no email…", observed live); a blank line renders as a paragraph
+     * break instead. Only these interleaved events are visible boundaries:
+     * the vendor stream carries no message framing, so two messages with
+     * nothing between them still concatenate (accepted residual).
+     */
+    let boundarySinceText = false;
     /**
      * Send the accumulated answer exactly once, whatever ends the turn —
      * cleanly, with an error, by abort, or by the stream simply stopping. A
@@ -598,7 +613,7 @@ export const runSupervisor = async (
       // message on a path with no context (a runner without the attachments
       // capability, a failed context build) would otherwise hand the harness
       // an empty string, which jcode turns into an empty text block the
-      // model API rejects with a 400 (verified in v0.71.1; v0.78.1 still
+      // model API rejects with a 400 (verified in v0.71.1; v0.81.1 still
       // passes the content through verbatim, no filtering).
       const composed = item.context
         ? `${item.context}\n\n${item.message}`
@@ -653,7 +668,21 @@ export const runSupervisor = async (
         // above the wire's own limit so the VISIBLE truncation stays the
         // runner's job and a reader sees one marker, not two.
         if (event.type === "text.delta" && answer.length < MAX_ANSWER_CHARS) {
+          // The separator rides inside the same cap guard and only ever
+          // follows existing text — it can neither make an empty answer
+          // non-empty nor grow a capped one.
+          if (boundarySinceText && answer !== "" && !answer.endsWith("\n\n")) {
+            answer += "\n\n";
+          }
+          boundarySinceText = false;
           answer += event.text;
+        }
+        if (
+          event.type === "tool.started" ||
+          event.type === "tool.finished" ||
+          event.type === "thinking.delta"
+        ) {
+          boundarySinceText = true;
         }
 
         // The answer goes out BEFORE the terminal event, not after: `seq` is
@@ -711,6 +740,7 @@ export const runSupervisor = async (
         // error event is the witness. Sliced at the source per the
         // transport's truncate-at-sender law: this frame must deliver.
         ...((errorCode === TURN_FAILURE_CODES.modelProviderError ||
+          errorCode === TURN_FAILURE_CODES.trialCreditExhausted ||
           errorCode === TURN_FAILURE_CODES.harnessBusy) &&
           terminalError && {
             error: terminalError.slice(0, MAX_TURN_RESULT_ERROR_CHARS),

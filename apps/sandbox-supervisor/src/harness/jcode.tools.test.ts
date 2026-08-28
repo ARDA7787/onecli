@@ -35,6 +35,17 @@ describe("the disabled harness-native tools", () => {
   });
 });
 
+describe("the managed config's tool-surface pin", () => {
+  it("pins mcp_tools=eager — the config half of the platform-tool cliff fence", () => {
+    // Upstream defaults mcp_tools="auto" (v0.79.1+): above a token
+    // threshold every mcp__* definition is silently replaced by a generic
+    // search/call pair — which would strip the platform tools out of the
+    // model's tool list. The env half (JCODE_MCP_TOOLS) is asserted by the
+    // launch wiring; this pins the config statement.
+    expect(managedConfigToml).toMatch(/\[tools\]\nmcp_tools = "eager"/);
+  });
+});
+
 describe("the managed config's update opt-out", () => {
   it("pins check_updates=false — the config half of the version pin", () => {
     // MUTATION-PROOF: drop the key and this fails. The key defaults TRUE
@@ -112,5 +123,14 @@ describe("the swarm posture: always on, fenced by env", () => {
     // "ready" holding server memory until asked about — and a finished
     // worker keeps consuming a cap slot until stopped or reaped).
     expect(SWARM_LIGHT_PROMPT).toContain("stop or clean up");
+    // The deliverable-extraction laws (observed live: every relay of helper
+    // text truncates long content, a message to a completed helper drops
+    // after reporting success, and a stop before collection loses the
+    // deliverable for good). Raw pins — each fragment sits inside one
+    // physical line of the block, like the pins above.
+    expect(SWARM_LIGHT_PROMPT).toContain("name an exact file path");
+    expect(SWARM_LIGHT_PROMPT).toContain("one at a time");
+    expect(SWARM_LIGHT_PROMPT).toContain("already completed");
+    expect(SWARM_LIGHT_PROMPT).toContain("verified in hand");
   });
 });
