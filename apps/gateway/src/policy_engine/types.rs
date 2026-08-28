@@ -64,6 +64,14 @@ impl PolicyRequest {
     pub(super) fn enforce_deny(&self) -> bool {
         self.has_injections && !self.is_llm_host
     }
+
+    /// Public-web traffic is the complement of managed credential traffic and
+    /// known LLM-provider traffic. This classification is intentionally based
+    /// on the request after injection selection, so `Target::Web` cannot govern
+    /// app/secret traffic or the model's own transport.
+    pub(super) fn is_public_web(&self) -> bool {
+        !self.has_injections && !self.is_llm_host
+    }
 }
 
 /// The normalized decision the corpus/parity tests assert against — the first-match
@@ -156,11 +164,20 @@ pub(super) enum Identity {
 /// tool host of the provider; `Connection` binds one specific connection —
 /// winner-id equality plus the same catalog expansion; `Secret` gates its
 /// resolved host(s) (step 8). The translator (step-4 shadow / corpus) only
-/// emits `Network`; the live v2 assembler emits all four.
+/// emits `Network`; the live v2 assembler additionally emits `Web`, `App`,
+/// `Connection`, and `Secret`.
 #[derive(Debug, Clone)]
 pub(super) enum Target {
     Network {
         host_pattern: String,
+        path_pattern: Option<String>,
+        method: Option<String>,
+    },
+    /// Public-web traffic only (`!has_injections && !is_llm_host`). An absent
+    /// host pattern matches every public-web host; path/method/conditions share
+    /// the byte-identical network matcher.
+    Web {
+        host_pattern: Option<String>,
         path_pattern: Option<String>,
         method: Option<String>,
     },

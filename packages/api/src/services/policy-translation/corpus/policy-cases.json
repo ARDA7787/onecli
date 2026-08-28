@@ -1768,5 +1768,499 @@
     "expected": {
       "action": "block"
     }
+  },
+  {
+    "name": "web target blocks unmanaged public-web traffic",
+    "rules": [
+      {
+        "scope": "workspace",
+        "priority": 0,
+        "isDefault": false,
+        "source": "custom",
+        "name": "no web",
+        "identities": [],
+        "targets": [
+          {
+            "kind": "web",
+            "hostPattern": null,
+            "pathPattern": null,
+            "method": null
+          }
+        ],
+        "action": "block",
+        "requireApproval": false,
+        "rateLimit": null,
+        "rateLimitWindow": null,
+        "conditions": null
+      }
+    ],
+    "request": {
+      "host": "random.example",
+      "path": "/article",
+      "method": "GET",
+      "agentId": "agent-1",
+      "hasInjections": false,
+      "isLlmHost": false
+    },
+    "expected": { "action": "block" }
+  },
+  {
+    "name": "web target does not match an LLM host",
+    "rules": [
+      {
+        "scope": "workspace",
+        "priority": 0,
+        "isDefault": false,
+        "source": "custom",
+        "name": "no web",
+        "identities": [],
+        "targets": [
+          {
+            "kind": "web",
+            "hostPattern": null,
+            "pathPattern": null,
+            "method": null
+          }
+        ],
+        "action": "block",
+        "requireApproval": false,
+        "rateLimit": null,
+        "rateLimitWindow": null,
+        "conditions": null
+      }
+    ],
+    "request": {
+      "host": "api.openai.com",
+      "path": "/v1/responses",
+      "method": "POST",
+      "agentId": "agent-1",
+      "hasInjections": false,
+      "isLlmHost": true
+    },
+    "expected": { "action": "allow" }
+  },
+  {
+    "name": "web target does not match credential-managed traffic",
+    "rules": [
+      {
+        "scope": "workspace",
+        "priority": 0,
+        "isDefault": false,
+        "source": "custom",
+        "name": "no web",
+        "identities": [],
+        "targets": [
+          {
+            "kind": "web",
+            "hostPattern": null,
+            "pathPattern": null,
+            "method": null
+          }
+        ],
+        "action": "block",
+        "requireApproval": false,
+        "rateLimit": null,
+        "rateLimitWindow": null,
+        "conditions": null
+      }
+    ],
+    "request": {
+      "host": "gmail.googleapis.com",
+      "path": "/gmail/v1/users/me/messages",
+      "method": "GET",
+      "agentId": "agent-1",
+      "hasInjections": true,
+      "isLlmHost": false
+    },
+    "expected": { "action": "allow" }
+  },
+  {
+    "name": "web method split allows reads before the fallback block",
+    "rules": [
+      {
+        "scope": "workspace",
+        "priority": 0,
+        "isDefault": false,
+        "source": "custom",
+        "name": "read web",
+        "identities": [],
+        "targets": [
+          {
+            "kind": "web",
+            "hostPattern": null,
+            "pathPattern": null,
+            "method": "GET"
+          }
+        ],
+        "action": "allow",
+        "requireApproval": false,
+        "rateLimit": null,
+        "rateLimitWindow": null,
+        "conditions": null
+      },
+      {
+        "scope": "workspace",
+        "priority": 1,
+        "isDefault": false,
+        "source": "custom",
+        "name": "block web writes",
+        "identities": [],
+        "targets": [
+          {
+            "kind": "web",
+            "hostPattern": null,
+            "pathPattern": null,
+            "method": null
+          }
+        ],
+        "action": "block",
+        "requireApproval": false,
+        "rateLimit": null,
+        "rateLimitWindow": null,
+        "conditions": null
+      }
+    ],
+    "request": {
+      "host": "random.example",
+      "path": "/article",
+      "method": "GET",
+      "agentId": "agent-1",
+      "hasInjections": false,
+      "isLlmHost": false
+    },
+    "expected": { "action": "allow" }
+  },
+  {
+    "name": "web method split blocks writes through the fallback",
+    "rules": [
+      {
+        "scope": "workspace",
+        "priority": 0,
+        "isDefault": false,
+        "source": "custom",
+        "name": "read web",
+        "identities": [],
+        "targets": [
+          {
+            "kind": "web",
+            "hostPattern": null,
+            "pathPattern": null,
+            "method": "GET"
+          }
+        ],
+        "action": "allow",
+        "requireApproval": false,
+        "rateLimit": null,
+        "rateLimitWindow": null,
+        "conditions": null
+      },
+      {
+        "scope": "workspace",
+        "priority": 1,
+        "isDefault": false,
+        "source": "custom",
+        "name": "block web writes",
+        "identities": [],
+        "targets": [
+          {
+            "kind": "web",
+            "hostPattern": null,
+            "pathPattern": null,
+            "method": null
+          }
+        ],
+        "action": "block",
+        "requireApproval": false,
+        "rateLimit": null,
+        "rateLimitWindow": null,
+        "conditions": null
+      }
+    ],
+    "request": {
+      "host": "random.example",
+      "path": "/article",
+      "method": "POST",
+      "agentId": "agent-1",
+      "hasInjections": false,
+      "isLlmHost": false
+    },
+    "expected": { "action": "block" }
+  },
+  {
+    "name": "web target can require approval",
+    "rules": [
+      {
+        "scope": "workspace",
+        "priority": 0,
+        "isDefault": false,
+        "source": "custom",
+        "name": "ask for web",
+        "identities": [],
+        "targets": [
+          {
+            "kind": "web",
+            "hostPattern": null,
+            "pathPattern": null,
+            "method": null
+          }
+        ],
+        "action": "allow",
+        "requireApproval": true,
+        "rateLimit": null,
+        "rateLimitWindow": null,
+        "conditions": null
+      }
+    ],
+    "request": {
+      "host": "unknown.example",
+      "path": "/submit",
+      "method": "POST",
+      "agentId": "agent-1",
+      "hasInjections": false,
+      "isLlmHost": false
+    },
+    "expected": { "action": "allow", "requireApproval": true }
+  },
+  {
+    "name": "web target can carry a rate limit",
+    "rules": [
+      {
+        "scope": "workspace",
+        "priority": 0,
+        "isDefault": false,
+        "source": "custom",
+        "name": "meter web",
+        "identities": [],
+        "targets": [
+          {
+            "kind": "web",
+            "hostPattern": null,
+            "pathPattern": null,
+            "method": "GET"
+          }
+        ],
+        "action": "allow",
+        "requireApproval": false,
+        "rateLimit": 2,
+        "rateLimitWindow": "minute",
+        "conditions": null
+      }
+    ],
+    "request": {
+      "host": "random.example",
+      "path": "/article",
+      "method": "GET",
+      "agentId": "agent-1",
+      "hasInjections": false,
+      "isLlmHost": false
+    },
+    "expected": {
+      "action": "allow",
+      "rateLimit": 2,
+      "rateLimitWindow": "minute"
+    }
+  },
+  {
+    "name": "web host narrowing allows a matching public host",
+    "rules": [
+      {
+        "scope": "workspace",
+        "priority": 0,
+        "isDefault": false,
+        "source": "custom",
+        "name": "allow sec",
+        "identities": [],
+        "targets": [
+          {
+            "kind": "web",
+            "hostPattern": "*.sec.gov",
+            "pathPattern": null,
+            "method": null
+          }
+        ],
+        "action": "allow",
+        "requireApproval": false,
+        "rateLimit": null,
+        "rateLimitWindow": null,
+        "conditions": null
+      },
+      {
+        "scope": "workspace",
+        "priority": 1,
+        "isDefault": false,
+        "source": "custom",
+        "name": "block other web",
+        "identities": [],
+        "targets": [
+          {
+            "kind": "web",
+            "hostPattern": null,
+            "pathPattern": null,
+            "method": null
+          }
+        ],
+        "action": "block",
+        "requireApproval": false,
+        "rateLimit": null,
+        "rateLimitWindow": null,
+        "conditions": null
+      }
+    ],
+    "request": {
+      "host": "data.sec.gov",
+      "path": "/submissions",
+      "method": "GET",
+      "agentId": "agent-1",
+      "hasInjections": false,
+      "isLlmHost": false
+    },
+    "expected": { "action": "allow" }
+  },
+  {
+    "name": "web host narrowing falls through for another public host",
+    "rules": [
+      {
+        "scope": "workspace",
+        "priority": 0,
+        "isDefault": false,
+        "source": "custom",
+        "name": "allow sec",
+        "identities": [],
+        "targets": [
+          {
+            "kind": "web",
+            "hostPattern": "*.sec.gov",
+            "pathPattern": null,
+            "method": null
+          }
+        ],
+        "action": "allow",
+        "requireApproval": false,
+        "rateLimit": null,
+        "rateLimitWindow": null,
+        "conditions": null
+      },
+      {
+        "scope": "workspace",
+        "priority": 1,
+        "isDefault": false,
+        "source": "custom",
+        "name": "block other web",
+        "identities": [],
+        "targets": [
+          {
+            "kind": "web",
+            "hostPattern": null,
+            "pathPattern": null,
+            "method": null
+          }
+        ],
+        "action": "block",
+        "requireApproval": false,
+        "rateLimit": null,
+        "rateLimitWindow": null,
+        "conditions": null
+      }
+    ],
+    "request": {
+      "host": "example.com",
+      "path": "/",
+      "method": "GET",
+      "agentId": "agent-1",
+      "hasInjections": false,
+      "isLlmHost": false
+    },
+    "expected": { "action": "block" }
+  },
+  {
+    "name": "an earlier network rule wins before a web rule",
+    "rules": [
+      {
+        "scope": "workspace",
+        "priority": 0,
+        "isDefault": false,
+        "source": "custom",
+        "name": "allow exact host",
+        "identities": [],
+        "targets": [
+          {
+            "kind": "network",
+            "hostPattern": "random.example",
+            "pathPattern": null,
+            "method": null
+          }
+        ],
+        "action": "allow",
+        "requireApproval": false,
+        "rateLimit": null,
+        "rateLimitWindow": null,
+        "conditions": null
+      },
+      {
+        "scope": "workspace",
+        "priority": 1,
+        "isDefault": false,
+        "source": "custom",
+        "name": "block web",
+        "identities": [],
+        "targets": [
+          {
+            "kind": "web",
+            "hostPattern": null,
+            "pathPattern": null,
+            "method": null
+          }
+        ],
+        "action": "block",
+        "requireApproval": false,
+        "rateLimit": null,
+        "rateLimitWindow": null,
+        "conditions": null
+      }
+    ],
+    "request": {
+      "host": "random.example",
+      "path": "/",
+      "method": "GET",
+      "agentId": "agent-1",
+      "hasInjections": false,
+      "isLlmHost": false
+    },
+    "expected": { "action": "allow" }
+  },
+  {
+    "name": "an agent-scoped web rule does not match another agent",
+    "rules": [
+      {
+        "scope": "workspace",
+        "priority": 0,
+        "isDefault": false,
+        "source": "custom",
+        "name": "agent no web",
+        "identities": [{ "type": "agent", "id": "agent-a" }],
+        "targets": [
+          {
+            "kind": "web",
+            "hostPattern": null,
+            "pathPattern": null,
+            "method": null
+          }
+        ],
+        "action": "block",
+        "requireApproval": false,
+        "rateLimit": null,
+        "rateLimitWindow": null,
+        "conditions": null
+      }
+    ],
+    "request": {
+      "host": "random.example",
+      "path": "/",
+      "method": "GET",
+      "agentId": "agent-b",
+      "hasInjections": false,
+      "isLlmHost": false
+    },
+    "expected": { "action": "allow" }
   }
 ]

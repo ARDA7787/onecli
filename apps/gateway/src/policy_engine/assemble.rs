@@ -31,7 +31,7 @@ fn decode_identities(rows: &[PolicyIdentityRow]) -> Vec<Identity> {
         .collect()
 }
 
-/// `network`/`app`/`secret`/`connection` → the matchable targets; an unknown kind
+/// `network`/`web`/`app`/`secret`/`connection` → the matchable targets; an unknown kind
 /// → `Unresolved`. A `secret` target resolves to its credential's host pattern(s)
 /// via `secret_hosts`; a `connection` target resolves through `connection_providers`
 /// (both loaded at connect) to a `Target::Connection` that KEEPS the id — the
@@ -49,6 +49,11 @@ fn decode_targets(
         .map(|r| match r.kind.as_str() {
             "network" => Target::Network {
                 host_pattern: r.host_pattern.clone().unwrap_or_default(),
+                path_pattern: r.path_pattern.clone(),
+                method: r.method.clone(),
+            },
+            "web" => Target::Web {
+                host_pattern: r.host_pattern.clone(),
                 path_pattern: r.path_pattern.clone(),
                 method: r.method.clone(),
             },
@@ -236,6 +241,33 @@ mod tests {
                 assert_eq!(method.as_deref(), Some("GET"));
             }
             other => panic!("expected one network target, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decodes_web_target_with_optional_host() {
+        let rows = vec![row(
+            "block",
+            json!([]),
+            json!([{ "kind": "web", "hostPattern": null, "pathPattern": "/docs/*", "method": "GET" }]),
+        )];
+        let rules = assemble_v2(
+            &[],
+            &rows,
+            &SecretHosts::default(),
+            &ConnectionProviders::default(),
+        );
+        match &rules[0].targets[..] {
+            [Target::Web {
+                host_pattern,
+                path_pattern,
+                method,
+            }] => {
+                assert_eq!(host_pattern, &None);
+                assert_eq!(path_pattern.as_deref(), Some("/docs/*"));
+                assert_eq!(method.as_deref(), Some("GET"));
+            }
+            other => panic!("expected one web target, got {other:?}"),
         }
     }
 

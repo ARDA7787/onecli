@@ -3,7 +3,7 @@ import type { PolicyRuleTarget } from "@/lib/api";
 import { targetText } from "./policy-rule-display";
 
 const TargetChip = ({ target }: { target: PolicyRuleTarget }) => {
-  if (target.kind === "network") {
+  if (target.kind === "network" || target.kind === "web") {
     return (
       <span className="bg-muted text-foreground inline-flex max-w-full items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-xs">
         <Globe className="text-muted-foreground size-3 shrink-0" aria-hidden />

@@ -406,9 +406,10 @@ export interface ProjectionCondition {
 // ── Editable policy rules (policy_rules_v2) ──────────────────────────────────
 // The editor's data (GET /rules → PolicyRuleDto): rows carry an `id` (for
 // PATCH/DELETE), `enabled`, and are single-scope. Targets can be
-// app/connection/secret/network — the dialog authors all four (an app target
-// with no tools is the "All connections" whole-app shape; specific connections
-// become `connection` targets).
+// app/connection/secret/network/web. The generic dialog authors the first four
+// and preserves web targets read-only until the dedicated Web Access surface
+// lands. An app target with no tools is the "All connections" whole-app shape;
+// specific connections become `connection` targets.
 export type PolicyRuleTarget =
   | {
       kind: "app";
@@ -435,6 +436,12 @@ export type PolicyRuleTarget =
       hostPattern: string;
       pathPattern: string | null;
       method: string | null;
+    }
+  | {
+      kind: "web";
+      hostPattern: string | null;
+      pathPattern: string | null;
+      method: string | null;
     };
 
 export type PolicyRuleSource =
@@ -447,7 +454,9 @@ export type PolicyRuleSource =
   | "equipment"
   // Attach-model grant stacks (step 2): compiled by the grants API; rendered
   // as labeled, revocable derived rows until the workspace rules table retires.
-  | "grant";
+  | "grant"
+  // Per-agent public-web profile stacks, managed by the dedicated API.
+  | "web_access";
 
 export interface PolicyRuleV2 {
   id: string;

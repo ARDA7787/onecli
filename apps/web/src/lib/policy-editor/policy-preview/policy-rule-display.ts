@@ -93,6 +93,11 @@ export const targetText = (target: PolicyRuleTarget): string => {
       const method = target.method ? `${target.method} ` : "";
       return `${method}${target.hostPattern}${target.pathPattern ?? ""}`;
     }
+    case "web": {
+      const method = target.method ? `${target.method} ` : "";
+      const host = target.hostPattern ?? "Public web";
+      return `${method}${host}${target.pathPattern ?? ""}`;
+    }
     case "app": {
       // An "all connections at a level" app target vs the app-permission tool
       // grant. NO tools = the whole app (its traffic + injection), never

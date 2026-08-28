@@ -70,6 +70,12 @@ export type OverlapTarget =
       hostPattern: string;
       pathPattern: string | null;
       method: string | null;
+    }
+  | {
+      kind: "web";
+      hostPattern: string | null;
+      pathPattern: string | null;
+      method: string | null;
     };
 
 export interface OverlapWarning {
@@ -105,6 +111,8 @@ const targetEntry = (t: OverlapTarget): string => {
       return `secret|${t.secretId ?? ""}|${t.secretScope ?? ""}`;
     case "network":
       return `network|${t.hostPattern}|${t.pathPattern ?? ""}|${t.method ?? ""}`;
+    case "web":
+      return `web|${t.hostPattern ?? ""}|${t.pathPattern ?? ""}|${t.method ?? ""}`;
   }
 };
 
@@ -173,6 +181,7 @@ const isLive = (t: OverlapTarget): boolean => {
     case "app":
     case "secret":
     case "network":
+    case "web":
       return true;
   }
 };
@@ -271,6 +280,18 @@ const targetCover = (t1: OverlapTarget, t2: OverlapTarget): boolean => {
   if (isUniversal(t1)) return true;
   if (t1.kind === "network" && t2.kind === "network") {
     return networkCover(t1, t2);
+  }
+  if (t1.kind === "network" && t2.kind === "web") {
+    return networkCover(t1, {
+      ...t2,
+      hostPattern: t2.hostPattern ?? "*",
+    });
+  }
+  if (t1.kind === "web" && t2.kind === "web") {
+    return networkCover(
+      { ...t1, hostPattern: t1.hostPattern ?? "*" },
+      { ...t2, hostPattern: t2.hostPattern ?? "*" },
+    );
   }
   if (t1.kind === "app" && t2.kind === "app") {
     // Same provider; a WHOLE-app t1 (no tools = host-only on every catalog

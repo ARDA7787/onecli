@@ -1371,8 +1371,9 @@ model PolicyRuleV2 {
   // (materialized from the old model by the step-5 coherence bridge, until the
   // old editors retire at step 7) | "default" (the terminal posture rule) |
   // "equipment" (step 8, injection-only, derived from the live equipment
-  // model). The bridge re-materializes only the app_permission/blocklist/
-  // equipment rows, leaving custom + default untouched.
+  // model) | "grant" (agent credential attachment) | "web_access" (per-agent
+  // public-web profile). The bridge re-materializes only the app_permission/
+  // blocklist/equipment rows, leaving the other sources untouched.
   source          String   @default("custom")
   name            String
   description     String?
@@ -1426,7 +1427,7 @@ model PolicyRuleIdentity {
 model PolicyRuleTarget {
   id                 String   @id @default(uuid())
   ruleId             String   @map("rule_id")
-  kind               String // "app" | "connection" | "secret" | "network"
+  kind               String // "app" | "connection" | "secret" | "network" | "web"
   appProvider        String?  @map("app_provider") // kind = app
   // Narrow which endpoints the rule matches; EMPTY = the WHOLE app (host-only
   // on the provider's catalog hosts — permit on allow / block on block). On a
@@ -1443,7 +1444,7 @@ model PolicyRuleTarget {
   // secrets at that level ("all secrets"). Mutually exclusive with `secretId`
   // (specific secret). Only set when kind = "secret".
   secretScope        String?  @map("secret_scope")
-  hostPattern        String?  @map("host_pattern") // kind = network
+  hostPattern        String?  @map("host_pattern") // kind = network/web (optional for web)
   pathPattern        String?  @map("path_pattern")
   method             String?
 

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The backfill write (`backfillPublishScope`) is the only DB-touching path under
 // test; everything else it uses (policyScope, jsonInput, identityCreate,
@@ -21,6 +21,8 @@ const state = vi.hoisted(() => ({
     provider: string;
     policy: Record<string, unknown>;
   }[],
+  draftRule: null as null | Record<string, unknown>,
+  deletedRuleIds: [] as string[],
 }));
 
 vi.mock("@onecli/db", () => ({
@@ -53,7 +55,11 @@ vi.mock("@onecli/db", () => ({
     },
     // getPolicyDefault's read path: no persisted default → the virtual one.
     policyRuleV2: {
-      findFirst: async () => null,
+      findFirst: async () => state.draftRule,
+      delete: async ({ where }: { where: { id: string } }) => {
+        state.deletedRuleIds.push(where.id);
+        return { id: where.id };
+      },
     },
     appConnection: {
       findMany: async ({ where }: { where: unknown }) => {
@@ -64,8 +70,13 @@ vi.mock("@onecli/db", () => ({
   },
 }));
 
-const { backfillPublishScope, assertSessionPolicyValid, getPolicyDefault } =
-  await import("./policy-service");
+const {
+  backfillPublishScope,
+  assertSessionPolicyValid,
+  deletePolicyRule,
+  getPolicyDefault,
+  updatePolicyRule,
+} = await import("./policy-service");
 const { initPolicyValidator } = await import("../providers");
 
 const networkRule = {
@@ -152,6 +163,41 @@ describe("backfillPublishScope", () => {
       workspaceId: "proj-1",
       isDefault: true,
     });
+  });
+});
+
+describe("compiler-owned Web Access rules", () => {
+  beforeEach(() => {
+    state.draftRule = {
+      id: "managed-1",
+      source: "web_access",
+      action: "block",
+      rateLimit: null,
+      rateLimitWindow: null,
+      requireApproval: false,
+      conditions: null,
+      targets: [],
+    };
+    state.deletedRuleIds = [];
+  });
+
+  afterEach(() => {
+    state.draftRule = null;
+  });
+
+  it("rejects generic content edits", async () => {
+    await expect(
+      updatePolicyRule({ workspaceId: "workspace-1" }, "managed-1", {
+        name: "hand edit",
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("rejects generic deletes", async () => {
+    await expect(
+      deletePolicyRule({ workspaceId: "workspace-1" }, "managed-1"),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(state.deletedRuleIds).toEqual([]);
   });
 });
 

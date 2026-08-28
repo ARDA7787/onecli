@@ -59,7 +59,7 @@ export interface PolicyRuleDto {
 }
 
 // Response targets mirror the input union but loosen `method` to a plain string
-// (it came from the validated enum on write; the response reflects storage).
+// and normalize optional web selectors to null (the response reflects storage).
 export type PolicyTargetDto =
   | {
       kind: "app";
@@ -76,6 +76,12 @@ export type PolicyTargetDto =
   | {
       kind: "network";
       hostPattern: string;
+      pathPattern: string | null;
+      method: string | null;
+    }
+  | {
+      kind: "web";
+      hostPattern: string | null;
       pathPattern: string | null;
       method: string | null;
     };
@@ -161,6 +167,13 @@ const toTargetDto = (row: RuleRow["targets"][number]): PolicyTargetDto => {
         pathPattern: row.pathPattern,
         method: row.method,
       };
+    case "web":
+      return {
+        kind: "web",
+        hostPattern: row.hostPattern,
+        pathPattern: row.pathPattern,
+        method: row.method,
+      };
     default:
       throw new Error(`unknown policy target kind: ${row.kind}`);
   }
@@ -233,6 +246,13 @@ const targetCreate = (
         pathPattern: t.pathPattern ?? null,
         method: t.method ?? null,
       };
+    case "web":
+      return {
+        kind: "web",
+        hostPattern: t.hostPattern ?? null,
+        pathPattern: t.pathPattern ?? null,
+        method: t.method ?? null,
+      };
   }
 };
 
@@ -265,7 +285,7 @@ const targetRowToCreate = (
 
 // Drop redundant entries whose (rule, principal) / (rule, connection|secret)
 // pair the DB would reject as a UNIQUE violation. Same-key entries are
-// redundant, not an error (§2.6); app/network rows carry no such unique.
+// redundant, not an error (§2.6); app/network/web rows carry no such unique.
 const dedupeIdentities = (
   items: PolicyIdentityInput[],
 ): PolicyIdentityInput[] => {
@@ -463,7 +483,7 @@ export const assertIdentitiesValid = async (
 // reference check in `agent-service`); an ORG rule may name org-level resources
 // only. This is the same OWNERSHIP invariant `assertIdentitiesValid` enforces for
 // identities, and it closes the IDOR gap `asReferenceError` leaves open (it only
-// proves existence, in ANY org). `app`/`network` targets carry no owned id, so
+// proves existence, in ANY org). `app`/`network`/`web` targets carry no owned id, so
 // they're skipped; "no connection/secret targets" always passes. Reads the shared
 // schema only (no `ee/` dependency), so it runs in every edition.
 export const assertTargetsValid = async (
@@ -788,6 +808,12 @@ export const updatePolicyRule = async (
     include: { targets: true },
   });
   if (!existing) throw new ServiceError("NOT_FOUND", "Policy rule not found.");
+  if (existing.source === "web_access") {
+    throw new ServiceError(
+      "CONFLICT",
+      "Web Access profile rules are managed through the agent Web Access API.",
+    );
+  }
 
   const nextAction = input.action ?? existing.action;
   const nextRateLimit =
@@ -937,9 +963,15 @@ export const deletePolicyRule = async (
 ): Promise<void> => {
   const existing = await db.policyRuleV2.findFirst({
     where: { id, ...policyScope(scope), status: "draft", isDefault: false },
-    select: { id: true },
+    select: { id: true, source: true },
   });
   if (!existing) throw new ServiceError("NOT_FOUND", "Policy rule not found.");
+  if (existing.source === "web_access") {
+    throw new ServiceError(
+      "CONFLICT",
+      "Web Access profile rules are managed through the agent Web Access API.",
+    );
+  }
   await db.policyRuleV2.delete({ where: { id } });
   // Manual ordering: deleting leaves a priority gap — harmless (only relative
   // order matters to first-match; the UI numbers rows by index) and renumbered
@@ -1113,7 +1145,7 @@ export interface PublishResult {
 
 // How many published generations to retain per scope for rollback; older ones
 // are pruned on publish so frequent republishes don't grow the table unbounded.
-const PUBLISHED_GENERATION_RETENTION = 10;
+export const PUBLISHED_GENERATION_RETENTION = 10;
 
 // Gate-less snapshot of the given draft rows into a fresh published generation
 // (active published set = max(generation)). Callers hold the scope lock and have

@@ -46,6 +46,7 @@ const SOURCE_LABEL: Partial<Record<PolicyRuleSource, string>> = {
   // repairs any hand-edit drift on its next write. Revocable here so a live
   // grant rule is never unreachable; authoring belongs to the attach surfaces.
   grant: "Agent grant",
+  web_access: "Web Access profile",
 };
 
 export interface EditableRuleRowProps {

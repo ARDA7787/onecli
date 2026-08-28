@@ -59,6 +59,7 @@ import { orgChannelRoutes } from "./routes/org-channels";
 import { agentChannelRoutes } from "./routes/agent-channels";
 import { agentCronRoutes } from "./routes/agent-crons";
 import { agentMemoryRoutes } from "./routes/agent-memories";
+import { agentWebAccessRoutes } from "./routes/web-access";
 import { userSkillRoutes } from "./routes/skills";
 import { orgSkillRoutes } from "./routes/org-skills";
 import { channelAdapterRoutes } from "./routes/channel-adapter";
@@ -240,6 +241,8 @@ export const createApiApp = (
   app.route("/agents", agentCronRoutes());
   // The agent's memory (step 8) — same composition rule as channels.
   app.route("/agents", agentMemoryRoutes());
+  // Per-agent public-web profiles compile to managed workspace policy rows.
+  app.route("/agents", agentWebAccessRoutes());
   // 410 Gone for the old-model paths step 10 removed. LAST, so every live route
   // above wins the first-match — these only catch what no longer exists.
   app.route("/rules", removedRuleRoutes());

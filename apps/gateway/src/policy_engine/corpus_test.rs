@@ -74,6 +74,11 @@ enum CorpusTarget {
         path_pattern: Option<String>,
         method: Option<String>,
     },
+    Web {
+        host_pattern: Option<String>,
+        path_pattern: Option<String>,
+        method: Option<String>,
+    },
     App {
         provider: String,
         #[serde(default)]
@@ -121,6 +126,15 @@ impl CorpusRule {
                         path_pattern,
                         method,
                     } => Target::Network {
+                        host_pattern,
+                        path_pattern,
+                        method,
+                    },
+                    CorpusTarget::Web {
+                        host_pattern,
+                        path_pattern,
+                        method,
+                    } => Target::Web {
                         host_pattern,
                         path_pattern,
                         method,
@@ -212,7 +226,7 @@ fn corpus_keeps_the_workspace_only_reduction_slice() {
 #[test]
 fn corpus_engine_matches_expected() {
     let cases: Vec<Case> = serde_json::from_str(CORPUS).expect("parse policy-cases.json");
-    assert_eq!(cases.len(), 33, "corpus case count changed");
+    assert_eq!(cases.len(), 44, "corpus case count changed");
 
     for case in cases {
         let request = PolicyRequest {

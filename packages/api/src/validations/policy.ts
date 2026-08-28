@@ -27,7 +27,7 @@ export const policyIdentitySchema = z.discriminatedUnion("type", [
 ]);
 export type PolicyIdentityInput = z.infer<typeof policyIdentitySchema>;
 
-const methodSchema = z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]);
+const methodSchema = z.enum(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]);
 
 /** A target's populated fields are shaped by `kind` (the kind_shape CHECK). */
 export const policyTargetSchema = z.discriminatedUnion("kind", [
@@ -61,6 +61,13 @@ export const policyTargetSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("network"),
     hostPattern: z.string().min(1).max(1000),
+    pathPattern: z.string().max(1000).optional(),
+    method: methodSchema.optional(),
+  }),
+  z.object({
+    kind: z.literal("web"),
+    // Unlike a network target, an omitted host means every public-web host.
+    hostPattern: z.string().min(1).max(1000).optional(),
     pathPattern: z.string().max(1000).optional(),
     method: methodSchema.optional(),
   }),

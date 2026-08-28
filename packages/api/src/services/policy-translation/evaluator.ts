@@ -9,6 +9,7 @@ import type {
   PolicyOutcome,
   PolicyRequest,
 } from "./types";
+import { isPublicWeb } from "./types";
 
 // ── The new first-match policy engine ───────────────────────────────────────
 // Two-level: per-scope first-match (org, then workspace), combined by strictest,
@@ -45,6 +46,17 @@ const targetMatches = (
     case "network":
       return (
         hostMatches(request.host, target.hostPattern) &&
+        endpointMatches(request, {
+          pathPattern: target.pathPattern ?? "*",
+          method: target.method,
+          conditions: rule.conditions,
+        })
+      );
+    case "web":
+      return (
+        isPublicWeb(request) &&
+        (target.hostPattern === null ||
+          hostMatches(request.host, target.hostPattern)) &&
         endpointMatches(request, {
           pathPattern: target.pathPattern ?? "*",
           method: target.method,

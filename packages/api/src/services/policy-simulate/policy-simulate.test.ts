@@ -287,6 +287,31 @@ const emptyHosts = {
 const emptyProviders = new Map<string, string>();
 
 describe("toSimRule (decode_row mirror, full fidelity)", () => {
+  it("decodes a web target without converting its optional host to network", () => {
+    const { rule } = toSimRule(
+      simRow({
+        targets: [
+          targetRow({
+            kind: "web",
+            hostPattern: null,
+            pathPattern: "/docs/*",
+            method: "GET",
+          }),
+        ],
+      }),
+      emptyHosts,
+      emptyProviders,
+    );
+    expect(rule.targets).toEqual([
+      {
+        kind: "web",
+        hostPattern: null,
+        pathPattern: "/docs/*",
+        method: "GET",
+      },
+    ]);
+  });
+
   it("decodes all THREE identity kinds", () => {
     const { rule } = toSimRule(
       simRow({

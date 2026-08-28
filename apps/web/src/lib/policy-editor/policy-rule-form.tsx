@@ -66,8 +66,8 @@ import {
   type PolicyTargetInput,
 } from "@onecli/api/validations/policy";
 
-type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
-const METHODS: Method[] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+type Method = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE";
+const METHODS: Method[] = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"];
 const ANY_METHOD = "_any";
 
 // The target kinds this editor authors. "App" fronts both specific connection
@@ -119,7 +119,8 @@ const conditionsAsSessionPolicy = (
 
 /** Whether the single-kind form can faithfully round-trip a rule's targets. It
  * can't when they span more than one kind family (network / app+connection /
- * secret), or a within-family shape it doesn't model: an app-permission app
+ * secret), contain a web target (reserved for the dedicated Web Access surface),
+ * or a within-family shape it doesn't model: an app-permission app
  * target (no `connectionScope`), >1 network/app target, an app+connection mix, or
  * a secret specific+"all" mix. Load-independent (reads only kinds + which
  * scope/id fields are set), so it holds before connections resolve. Only
@@ -131,6 +132,7 @@ const isUnrepresentable = (targets: PolicyRuleV2["targets"]): boolean => {
   const appTargets = targets.filter((t) => t.kind === "app");
   const connTargets = targets.filter((t) => t.kind === "connection");
   const netTargets = targets.filter((t) => t.kind === "network");
+  const webTargets = targets.filter((t) => t.kind === "web");
   const secretScoped = targets.filter(
     (t) => t.kind === "secret" && t.secretScope != null,
   );
@@ -147,6 +149,7 @@ const isUnrepresentable = (targets: PolicyRuleV2["targets"]): boolean => {
   );
   return (
     families.size > 1 ||
+    webTargets.length > 0 ||
     netTargets.length > 1 ||
     appTargets.length > 1 ||
     appTargets.some((t) => t.kind === "app" && t.connectionScope == null) ||

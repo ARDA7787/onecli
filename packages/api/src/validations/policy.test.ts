@@ -59,6 +59,37 @@ describe("policyTargetSchema — connection targets", () => {
   });
 });
 
+describe("policyTargetSchema — web targets", () => {
+  it("accepts an unqualified public-web target", () => {
+    expect(policyTargetSchema.parse({ kind: "web" })).toEqual({ kind: "web" });
+  });
+
+  it("accepts optional host, path, and method narrowing", () => {
+    expect(
+      policyTargetSchema.parse({
+        kind: "web",
+        hostPattern: "*.sec.gov",
+        pathPattern: "/Archives/*",
+        method: "GET",
+      }),
+    ).toEqual({
+      kind: "web",
+      hostPattern: "*.sec.gov",
+      pathPattern: "/Archives/*",
+      method: "GET",
+    });
+  });
+
+  it("rejects an empty host and unsupported method", () => {
+    expect(
+      policyTargetSchema.safeParse({ kind: "web", hostPattern: "" }).success,
+    ).toBe(false);
+    expect(
+      policyTargetSchema.safeParse({ kind: "web", method: "CONNECT" }).success,
+    ).toBe(false);
+  });
+});
+
 describe("sessionPolicySchema — granular per-resource scoping", () => {
   it("accepts a GitHub repositories policy", () => {
     expect(

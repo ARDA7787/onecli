@@ -12,6 +12,7 @@ const gate = vi.hoisted(() => ({ assertAllowed: vi.fn(async () => {}) }));
 const state = vi.hoisted(() => ({
   // The rule `updatePolicyRule` fetches (findFirst, fenced to isDefault:false).
   existing: null as unknown,
+  creates: [] as Record<string, unknown>[],
 }));
 
 // A RuleRow the DTO mapper can read (identities/targets empty → []). Its shape is
@@ -48,7 +49,10 @@ vi.mock("@onecli/db", () => {
   const policyRuleV2 = {
     findFirst: async () => state.existing,
     aggregate: async () => ({ _max: { priority: 0 } }),
-    create: async () => ruleRow(),
+    create: async ({ data }: { data: Record<string, unknown> }) => {
+      state.creates.push(data);
+      return ruleRow();
+    },
     update: async () => ruleRow(),
   };
   const tx = {
@@ -80,6 +84,7 @@ const NETWORK_TARGET = {
 
 beforeEach(() => {
   state.existing = ruleRow();
+  state.creates = [];
   gate.assertAllowed.mockClear();
 });
 
@@ -108,6 +113,26 @@ describe("createPolicyRule requires at least one target (Layer 2)", () => {
         USER,
       ),
     ).resolves.toMatchObject({ id: "r1" });
+  });
+
+  it("persists an unqualified web target with nullable network selectors", async () => {
+    await createPolicyRule(
+      SCOPE,
+      { name: "No web", action: "block", targets: [{ kind: "web" }] },
+      USER,
+    );
+    expect(state.creates[0]).toMatchObject({
+      targets: {
+        create: [
+          {
+            kind: "web",
+            hostPattern: null,
+            pathPattern: null,
+            method: null,
+          },
+        ],
+      },
+    });
   });
 });
 

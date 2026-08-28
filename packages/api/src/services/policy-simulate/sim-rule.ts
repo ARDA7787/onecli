@@ -9,8 +9,9 @@ import type { SecretHostSet } from "./secret-hosts";
 
 // Row → evaluator-rule mapper for the reflections. Mirrors
 // the gateway's row decode: identities decode all three
-// kinds (the verify path is agent-only by design and stays untouched), `secret`
-// targets resolve to their gated host patterns via the fenced `SecretHostSet`,
+// kinds (the verify path is agent-only by design and stays untouched), `web`
+// targets retain their traffic-class selector, `secret` targets resolve to their
+// gated host patterns via the fenced `SecretHostSet`,
 // and `connection` targets resolve to their connection's provider via the
 // fenced provider map (→ an app target carrying the target's own tools — empty
 // = the provider's whole app, host-only; named = the tool fan-out), exactly as
@@ -128,6 +129,13 @@ const decodeTarget = (
         pathPattern: target.pathPattern,
         method: target.method,
       };
+    case "web":
+      return {
+        kind: "web",
+        hostPattern: target.hostPattern,
+        pathPattern: target.pathPattern,
+        method: target.method,
+      };
     default:
       // Unknown kind → inert (mirror of `Target::Unresolved`).
       return { kind: "connection", connectionId: "", tools: [] };
@@ -177,7 +185,8 @@ export const toSimRule = (
       row.source === "blocklist" ||
       row.source === "default" ||
       row.source === "equipment" ||
-      row.source === "grant"
+      row.source === "grant" ||
+      row.source === "web_access"
         ? row.source
         : "custom",
     name: row.name,

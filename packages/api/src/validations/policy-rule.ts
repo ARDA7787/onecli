@@ -14,7 +14,9 @@ export const createPolicyRuleSchema = z
     name: z.string().trim().min(1).max(255),
     hostPattern: z.string().min(1).max(1000),
     pathPattern: z.string().max(1000).optional(),
-    method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).optional(),
+    method: z
+      .enum(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"])
+      .optional(),
     action: z.enum(["block", "rate_limit", "manual_approval", "allow"]),
     enabled: z.boolean(),
     agentId: z.string().optional(),
@@ -45,7 +47,7 @@ export const updatePolicyRuleSchema = z
     hostPattern: z.string().min(1).max(1000).optional(),
     pathPattern: z.string().max(1000).nullable().optional(),
     method: z
-      .enum(["GET", "POST", "PUT", "PATCH", "DELETE"])
+      .enum(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"])
       .nullable()
       .optional(),
     action: z

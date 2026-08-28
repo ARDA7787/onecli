@@ -64,6 +64,22 @@ fn target_matches(
                     body,
                 )
         }
+        Target::Web {
+            host_pattern,
+            path_pattern,
+            method,
+        } => {
+            request.is_public_web()
+                && host_pattern
+                    .as_deref()
+                    .is_none_or(|pattern| crate::connect::host_matches(&request.host, pattern))
+                && matches_request(
+                    &pseudo_rule(path_pattern.as_deref(), method.clone(), &rule.conditions),
+                    &request.method,
+                    &request.path,
+                    body,
+                )
+        }
         Target::App { provider, tools } => super::catalog::app_target_matches(
             provider,
             tools,

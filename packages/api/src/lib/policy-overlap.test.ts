@@ -32,6 +32,12 @@ const net = (
   method: string | null = null,
 ): OverlapTarget => ({ kind: "network", hostPattern, pathPattern, method });
 
+const web = (
+  hostPattern: string | null = null,
+  pathPattern: string | null = null,
+  method: string | null = null,
+): OverlapTarget => ({ kind: "web", hostPattern, pathPattern, method });
+
 const app = (
   provider: string,
   tools: string[],
@@ -42,6 +48,20 @@ const kinds = (rules: OverlapRule[]) =>
   findPolicyOverlaps(rules).map((w) => `${w.logicalId}:${w.kind}`);
 
 describe("findPolicyOverlaps — warns (provably dead)", () => {
+  it("detects duplicate and narrowed web targets", () => {
+    expect(
+      kinds([
+        rule({ logicalId: "a", priority: 0, targets: [web()] }),
+        rule({ logicalId: "b", priority: 1, targets: [web()] }),
+        rule({
+          logicalId: "c",
+          priority: 2,
+          targets: [web("*.sec.gov", null, "GET")],
+        }),
+      ]),
+    ).toEqual(["b:duplicate", "c:shadowed"]);
+  });
+
   it("flags an identical later rule as duplicate (same verdict)", () => {
     const a = rule({ logicalId: "a", priority: 1 });
     const b = rule({ logicalId: "b", priority: 2 });
@@ -275,6 +295,15 @@ describe("findPolicyOverlaps — warns (provably dead)", () => {
 });
 
 describe("findPolicyOverlaps — must NOT warn (undecidable or not dead)", () => {
+  it("does not treat public web as a cover for the broader network class", () => {
+    expect(
+      kinds([
+        rule({ logicalId: "web", priority: 0, targets: [web()] }),
+        rule({ logicalId: "network", priority: 1, targets: [net("*")] }),
+      ]),
+    ).toEqual([]);
+  });
+
   it("group-membership inclusion is never assumed", () => {
     const group = rule({
       logicalId: "g",

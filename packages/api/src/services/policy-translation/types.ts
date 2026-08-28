@@ -4,7 +4,7 @@
 // matcher and app-catalog) and the shared enums.
 
 export type RateWindow = "minute" | "hour" | "day";
-export type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+export type Method = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 export interface OldCondition {
   target: string;
@@ -42,6 +42,11 @@ export interface PolicyRequest {
    */
   winningConnectionId?: string;
 }
+
+/** The traffic class matched by a `web` target. Kept beside the request shape
+ * so the TypeScript evaluator and every reflection use one classification. */
+export const isPublicWeb = (request: PolicyRequest): boolean =>
+  !request.hasInjections && !request.isLlmHost;
 
 /**
  * The normalized decision produced by BOTH the oracle (old strictest-wins) and
@@ -103,7 +108,9 @@ export type RuleSource =
   | "equipment"
   // Attach-model grant stacks (step 2): compiled per-(agent, credential) by the
   // grants service; they DECIDE and inject like custom rules.
-  | "grant";
+  | "grant"
+  // Per-agent public-web profile stacks, managed by the dedicated API.
+  | "web_access";
 
 // A `connection` target names a credential to inject — AND binds decisions to
 // that specific account: a RESOLVED one (provider present, set by the gateway's
@@ -118,6 +125,13 @@ export type NewTarget =
   | {
       kind: "network";
       hostPattern: string;
+      pathPattern: string | null;
+      method: string | null;
+    }
+  | {
+      kind: "web";
+      /** null = every public-web host. */
+      hostPattern: string | null;
       pathPattern: string | null;
       method: string | null;
     }

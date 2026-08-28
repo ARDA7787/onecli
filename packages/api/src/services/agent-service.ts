@@ -17,6 +17,8 @@ import { presenceSettingsUrlFor } from "./channels/registry";
 import { autoAttachLlmKeys } from "./llm-autoattach-service";
 import { llmProvider } from "../llm/registry";
 import { isOnpremEdition } from "../lib/policy-flags";
+import { lockScope } from "./policy-service";
+import { WEB_ACCESS_SOURCE } from "./web-access-compile";
 import {
   IDENTIFIER_REGEX,
   INSTRUCTIONS_MAX_LENGTH,
@@ -345,10 +347,26 @@ export const deleteAgent = async (workspaceId: string, agentId: string) => {
     organizationId: agent.workspace.organizationId,
   });
 
-  // Every agent is deletable, the last one included: a workspace with no agents
-  // is a valid state (nothing is seeded), and the old "cannot delete the
-  // default agent" guard made the first agent permanent.
-  await db.agent.delete({ where: { id: agentId } });
+  // An identity row cascades when its agent disappears, but its parent policy
+  // rule does not. A surviving per-agent Web Access rule would therefore have
+  // an EMPTY identity set, which means "all agents". Remove every generation
+  // of the managed stack first under the same lock profile writes take.
+  await db.$transaction(async (tx) => {
+    await lockScope(tx, { scope: "workspace", workspaceId });
+    await tx.policyRuleV2.deleteMany({
+      where: {
+        workspaceId,
+        source: WEB_ACCESS_SOURCE,
+        OR: [
+          { identities: { some: { agentId } } },
+          { logicalId: { startsWith: `web-access:${agentId}:` } },
+        ],
+      },
+    });
+    // Every agent is deletable, the last one included: a workspace with no
+    // agents is a valid state (nothing is seeded).
+    await tx.agent.delete({ where: { id: agentId } });
+  });
 };
 
 export interface UpdateAgentInput {
