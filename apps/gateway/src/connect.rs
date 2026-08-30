@@ -449,12 +449,17 @@ impl PolicyEngine {
             .into_iter()
             .filter(|s| {
                 // Injection covers every host this secret's credential is valid on —
-                // the SAME set enforcement resolves (`db::find_secret_hosts`), so a
-                // policy rule on the secret can never fall short of injection (the
-                // OpenAI multi-host bypass class).
-                secret_inject::secret_host_patterns(&s.type_, &s.host_pattern)
-                    .iter()
-                    .any(|p| host_matches(hostname, p))
+                // a SUBSET of the set enforcement resolves (`db::find_secret_hosts`),
+                // so a policy rule on the secret can never fall short of injection
+                // (the OpenAI multi-host bypass class). The subset is the
+                // auth.openai.com carve-out: real OAuth logins are forwarded
+                // untouched (#490), while enforcement stays wide.
+                secret_inject::secret_injects_on_host(
+                    &s.type_,
+                    &s.host_pattern,
+                    s.metadata.as_ref(),
+                    hostname,
+                )
             })
             .collect();
 
@@ -471,12 +476,7 @@ impl PolicyEngine {
             // 1Password-sourced value is always a raw API key (api-key metadata).
             let is_openai_oauth = secret.value_source != "onepassword"
                 && secret.type_ == "openai"
-                && secret
-                    .metadata
-                    .as_ref()
-                    .and_then(|m| m.get("authMode"))
-                    .and_then(|v| v.as_str())
-                    == Some("oauth");
+                && secret_inject::is_oauth_mode(secret.metadata.as_ref());
 
             let effective_value = if is_openai_oauth {
                 match secret_inject::refresh_openai_oauth_if_expired(
@@ -1214,13 +1214,19 @@ impl PolicyEngine {
     /// host that the agent can't access. Used to distinguish "not connected" from
     /// "connected but agent lacks access" in selective mode.
     async fn has_available_credentials(&self, agent: &db::AgentRow, hostname: &str) -> bool {
-        // Check 1: workspace or org has manual secrets matching this host
+        // Check 1: workspace or org has manual secrets matching this host.
+        // Same predicate as injection (`secret_injects_on_host`), so a host no
+        // secret would ever inject on (e.g. auth.openai.com) can't surface as
+        // a bogus `access_restricted`.
         match db::find_secrets_by_workspace(&self.pool, &agent.workspace_id).await {
             Ok(secrets) => {
                 if secrets.iter().any(|s| {
-                    secret_inject::secret_host_patterns(&s.type_, &s.host_pattern)
-                        .iter()
-                        .any(|p| host_matches(hostname, p))
+                    secret_inject::secret_injects_on_host(
+                        &s.type_,
+                        &s.host_pattern,
+                        s.metadata.as_ref(),
+                        hostname,
+                    )
                 }) {
                     return true;
                 }
@@ -1234,9 +1240,12 @@ impl PolicyEngine {
         match db::find_secrets_by_org(&self.pool, &agent.organization_id).await {
             Ok(secrets) => {
                 if secrets.iter().any(|s| {
-                    secret_inject::secret_host_patterns(&s.type_, &s.host_pattern)
-                        .iter()
-                        .any(|p| host_matches(hostname, p))
+                    secret_inject::secret_injects_on_host(
+                        &s.type_,
+                        &s.host_pattern,
+                        s.metadata.as_ref(),
+                        hostname,
+                    )
                 }) {
                     return true;
                 }
