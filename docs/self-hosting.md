@@ -188,14 +188,14 @@ shapes a URL.
 
 ### Scenarios
 
-| Scenario                                              | What to set                                                                                                                   |
-| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Laptop / trying it out                                | Nothing                                                                                                                       |
-| Isolated VM reached via a tunnel (`ssh -L`, SSM, IAP) | Nothing — localhost is the correct advertised address; forward ports 10254, 10255 and 10256                                   |
-| Permanent machine on a LAN                            | `ONECLI_EXTERNAL_URL=http://192.168.1.20:10254` and `ONECLI_BIND_HOST=0.0.0.0` (or run the wizard, which asks both questions) |
-| Public domain behind a TLS proxy                      | `ONECLI_EXTERNAL_URL=https://onecli.example.com` — bind stays local, the proxy connects from the same host                    |
-| Split hosts (app + api domains)                       | `ONECLI_EXTERNAL_URL=https://app.example.com` plus the `API_URL=https://api.example.com` override                             |
-| Reachable at two addresses (IP + DNS name)            | Add the second one to `ONECLI_TRUSTED_ORIGINS` (comma-separated)                                                              |
+| Scenario                                              | What to set                                                                                                                                |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Laptop / trying it out                                | Nothing                                                                                                                                    |
+| Isolated VM reached via a tunnel (`ssh -L`, SSM, IAP) | Nothing — localhost is the correct advertised address; forward ports 10254, 10255 and 10256                                                |
+| Permanent machine on a LAN                            | `ONECLI_EXTERNAL_URL=http://192.168.1.20:10254` and `ONECLI_BIND_HOST=0.0.0.0` (or run the wizard, which asks both questions)              |
+| Public domain behind a TLS proxy                      | `ONECLI_EXTERNAL_URL=https://onecli.example.com` — bind stays local, the proxy connects from the same host                                 |
+| Split hosts (app + api domains)                       | `ONECLI_EXTERNAL_URL=https://app.example.com` plus the `API_URL=https://api.example.com` override                                          |
+| Reachable at two addresses (IP + DNS name)            | Add the second one to `ONECLI_TRUSTED_ORIGINS` (comma-separated) — it is what lets a browser on that address both sign in and call the API |
 
 Legacy names keep working forever: `APP_URL` is a read-alias of the canonical
 URL (it never derives the api/gateway origins — set those explicitly with

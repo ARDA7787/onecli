@@ -7,7 +7,7 @@ import { IS_CLOUD } from "@onecli/api/lib/env";
 import {
   apiOrigin,
   appOrigin,
-  isTrustedBrowserOrigin,
+  trustedBrowserOrigin,
 } from "@onecli/api/lib/public-origins";
 import { LEGACY_PROJECT_HEADER } from "@onecli/api/lib/legacy-project-compat";
 import {
@@ -38,15 +38,21 @@ const apiApp = createApiApp(
 
 export const app = new Hono();
 
-// Cloud pins the dashboard origin. Self-host resolves the same trusted set the
-// auth layer uses (derived app/api origins, loopback twins, and any
-// ONECLI_TRUSTED_ORIGINS extras) rather than mirroring whatever Origin arrived:
-// with `credentials: true`, reflecting an arbitrary origin is ambient trust.
-// An install at an address none of those yield must list it explicitly.
+// Cloud pins the dashboard origin. Self-host answers with the origin only when
+// it is one this deployment already trusts — the same set the auth layer
+// enforces at sign-in (app/api origins, their loopback twins, any
+// ONECLI_TRUSTED_ORIGINS extras). Reflecting whatever Origin arrived, which is
+// what this did before, hands `credentials: true` to every site the user's
+// browser visits; `SameSite=lax` does not close it, being site-scoped rather
+// than origin-scoped (a sibling subdomain is same-site and carries the session
+// cookie). An install reachable at an address none of those yield lists it in
+// ONECLI_TRUSTED_ORIGINS — the same line that already unblocks its sign-in.
 app.use(
   "*",
   cors({
-    origin: IS_CLOUD ? [appUrl] : (origin) => isTrustedBrowserOrigin(origin) ?? null,
+    origin: IS_CLOUD
+      ? [appUrl]
+      : (origin) => trustedBrowserOrigin(origin) ?? null,
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowHeaders: [
       "Authorization",
