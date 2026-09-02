@@ -48,6 +48,12 @@ model Organization {
   // never written by application code. Inert on self-host, where creation is
   // ungated in both directions.
   byoLegacy           Boolean  @default(false) @map("byo_legacy")
+  // The MIXED creation world (only read when byoLegacy is false): hosted stays
+  // the default door, and BYO creation is additionally allowed — the gradual
+  // migration path for a legacy customer moving to hosted. byoLegacy=true wins
+  // (this column is never consulted there). Set MANUALLY by the cloud
+  // operator, like byoLegacy. Inert on self-host.
+  byoEnabled          Boolean  @default(false) @map("byo_enabled")
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @updatedAt @map("updated_at")
 
@@ -1169,6 +1175,14 @@ model AgentChannel {
   integrationId       String    @map("integration_id")
   provider            String // "slack"
   externalId          String    @map("external_id") // the agent's own provider app id (Slack: app id)
+  // Which app flavor THIS app was built as ("agent" | "regular") — stamped at
+  // create, like `transport`: the provider-side config baked it in and (Slack)
+  // the agent flavor is irreversible, so the presence must remember what it
+  // is. New apps are always "agent"; "regular" survives on pre-existing rows
+  // (default "regular": every app predating the column was a plain bot) and
+  // the runtime honors the stamp — loader for agent apps, emoji receipt for
+  // regular ones. Switching = detach/re-attach.
+  appMode             String    @default("regular") @map("app_mode")
   identityRef         String?   @map("identity_ref") // the presence's own identity (Slack: bot user id)
   /// The app's own display handle on the provider (Slack: the bot's `user`
   /// from `auth.test`, e.g. "donna"). Captured at completion from a call we
@@ -1319,15 +1333,62 @@ model ChannelApprovalPrompt {
 // provider-side ledger only — no Turn FK on purpose (rows are pruned by age
 // >24h on insert, which also covers turns whose cursor never advances).
 model ChannelTurnReceipt {
-  id             String   @id @default(uuid())
-  turnId         String   @unique @map("turn_id")
-  agentChannelId String   @map("agent_channel_id")
-  // Provider-opaque address of the USER's message the reaction sits on
-  // (Slack: channel id + message ts).
+  id             String    @id @default(uuid())
+  turnId         String    @unique @map("turn_id")
+  agentChannelId String    @map("agent_channel_id")
+  // Provider-opaque address of the USER's message the mark sits on
+  // (Slack: channel id + message ts). For `kind: "session"` rows, `messageTs`
+  // is the THREAD ROOT ts the provider's work-status API is keyed by.
   channel        String
-  messageTs      String   @map("message_ts")
-  reaction       String
-  createdAt      DateTime @default(now()) @map("created_at")
+  messageTs      String    @map("message_ts")
+  // "reaction" = an emoji sits on the message and must come off on clear;
+  // "session" = the provider's native thread work-status (Slack: the agent
+  // session loader) is on and must be set back on clear.
+  kind           String    @default("reaction")
+  // The emoji, for reaction rows. Null on session rows — there is nothing
+  // to take off a specific message.
+  reaction       String?
+  // The provider-side id of the live NARRATION card for this turn (Slack:
+  // the message ts of the task-card post). Null until the turn runs its
+  // first tool, and on providers that cannot narrate at all. It lives HERE
+  // rather than in its own table because its lifetime is exactly this row's:
+  // posted while the turn works, removed by the same clear and sweep paths
+  // that take the loader down, so an abandoned card is impossible by
+  // construction.
+  cardTs         String?   @map("card_ts")
+  // Where the narration card is POSTED: the thread root for a group mention,
+  // NULL for a DM. Distinct from `messageTs` on purpose — that is the
+  // session root the native loader is keyed by, which a DM must have (Slack
+  // refuses a session without one) but which the card must NOT use, or every
+  // DM turn would open a thread for a loader nobody asked to keep.
+  cardThreadTs   String?   @map("card_thread_ts")
+  // Whether the provider's native work-status was actually turned on for
+  // this turn. False when the card carries the whole signal (a DM, where
+  // the enum would open a thread for nothing), and the clear must then NOT
+  // try to set a status that was never set.
+  workStatusSet  Boolean   @default(false) @map("work_status_set")
+  // Where a SEEN mark sits, when one rides beside a narration card. On a
+  // session row `messageTs` is the thread root, not the user's message, so
+  // the emoji's own address has to be kept separately or the clear would
+  // try to unreact the wrong line.
+  seenMessageTs  String?   @map("seen_message_ts")
+  // The steps shown on that card, oldest first — the turn's whole narration
+  // so far. The card is RE-RENDERED from this list on every update rather
+  // than patched, so this is the single source of what the reader sees, and
+  // it survives a process restart because it lives here rather than in
+  // adapter memory.
+  cardSteps      String[]  @map("card_steps")
+  // How many times the card has been written. The narration's compare-and-set
+  // key: two detached pushes for one turn read the same revision, and only
+  // the one whose update still matches it proceeds — an array cannot serve
+  // as that key (Prisma's list `equals` does not match an empty column, so
+  // the first claim of every turn would fail).
+  cardRev        Int       @default(0) @map("card_rev")
+  // When the card was last written, for the narration throttle. Slack's
+  // write is rate-limited per app, and tool boundaries alone do not bound
+  // it — a busy agent runs tools faster than the ceiling allows.
+  cardAt         DateTime? @map("card_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
 
   agentChannel AgentChannel @relation(fields: [agentChannelId], references: [id], onDelete: Cascade)
 

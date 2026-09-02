@@ -1,13 +1,21 @@
 import { ServiceError } from "../../../errors";
+import { logger } from "../../../../lib/logger";
 import type { ChannelProvider, PresenceIdentity } from "../../types";
+import { dispatchSlackEvent } from "./dispatch";
+import { slackSharedApp } from "./shared-install-service";
 import {
-  BOT_SCOPES,
+  botScopesFor,
   buildAgentManifest,
   tombstoneAppName,
   withSyncedAppName,
   withTombstoneName,
 } from "./manifest";
 import {
+  agentsSessionsSetStatus,
+  deleteMessage,
+  postBlocksMessage,
+  SLACK_TASK_TITLE_MAX,
+  updateBlocksMessage,
   authTest,
   downloadPrivateFile,
   filesInfo,
@@ -70,9 +78,26 @@ const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const appSettingsUrl = (appId: string): string =>
   `https://api.slack.com/apps/${encodeURIComponent(appId)}/general`;
 
+const log = logger.child({ component: "slack-provider" });
+
+/**
+ * The narration plan's heading. Deliberately plain: it sits above the task
+ * rows for the whole turn, so it describes the ACT of working, never a
+ * specific step (the rows do that).
+ */
+const NARRATION_PLAN_TITLE = "Working on your request";
+
 export const slackProvider: ChannelProvider = {
   id: "slack",
   displayName: "Slack",
+
+  // The one interpreter for both transports (dispatch.ts) — the neutral
+  // dispatch hook the generic ingest door calls by registry lookup.
+  dispatchInbound: dispatchSlackEvent,
+
+  // The deployment-owned shared app (SLACK_SHARED_* env): onboarding +
+  // config-token-free agent-app minting, reached only through this facet.
+  sharedApp: slackSharedApp,
 
   async connectIntegration(rawCredential) {
     const pasted = rawCredential.trim();
@@ -426,11 +451,125 @@ export const slackProvider: ChannelProvider = {
     });
   },
 
+  async setThreadWorkStatus({ credentialsJson, channel, threadTs, working }) {
+    const botToken = credentialsJson
+      ? parseSlackPresenceCredentials(credentialsJson).botToken
+      : undefined;
+    // No credential = cannot set the status — THROW (contract: the caller's
+    // reaction fallback listens for failure, and a silent return here would
+    // record a session receipt with no loader behind it).
+    if (!botToken) throw new Error("no bot credential");
+
+    // Slack's native agent loader. A free-text CAPTION beside it is not
+    // possible: `agents.sessions.setStatus` documents that "custom loading
+    // messages are not supported", and the legacy free-text method
+    // (`assistant.threads.setStatus`) now runs through a compatibility
+    // bridge onto this same session — VERIFIED LIVE 2026-08-31, it answers
+    // `ok: true` and renders nothing. Words in Slack need `chat.startStream`
+    // task cards, which is a message, not a status.
+    await agentsSessionsSetStatus(botToken, {
+      channelId: channel,
+      threadTs,
+      status: working ? "processing" : "active",
+    });
+  },
+
+  async narrateThreadWork({
+    credentialsJson,
+    channel,
+    threadTs,
+    activities,
+    cardTs,
+  }) {
+    const botToken = credentialsJson
+      ? parseSlackPresenceCredentials(credentialsJson).botToken
+      : undefined;
+    // Unlike the loader, narration is decoration: a missing credential is
+    // "cannot narrate", not a failure the caller must react to.
+    if (!botToken) return null;
+
+    // The WHOLE card, every time. `chat.update` replaces the message, so the
+    // list is rendered from the turn's full history rather than patched —
+    // which is why there is no partial state to reconcile and no row that
+    // can be left dangling.
+    //
+    // Every step but the last is finished by definition: the agent moved on
+    // from it. Only the newest is still running.
+    const blocks = [
+      {
+        type: "plan",
+        title: NARRATION_PLAN_TITLE,
+        tasks: activities.map((activity, index) => ({
+          task_id: `t${index}`,
+          title: activity.slice(0, SLACK_TASK_TITLE_MAX),
+          status: index === activities.length - 1 ? "in_progress" : "complete",
+        })),
+      },
+    ];
+
+    try {
+      if (cardTs === null) {
+        // FIRST step: a plain message. Omitting `threadTs` in a DM is what
+        // keeps the card top-level, where the conversation already lives —
+        // Slack's streaming methods cannot do this (they answer
+        // `invalid_thread_ts` without a root), and threading a DM per turn
+        // was the cost this replaces.
+        const posted = await postBlocksMessage(botToken, {
+          channel,
+          text: NARRATION_PLAN_TITLE,
+          blocks,
+          ...(threadTs === null ? {} : { threadTs }),
+        });
+        return { cardTs: posted.ts };
+      }
+      await updateBlocksMessage(botToken, {
+        channel,
+        ts: cardTs,
+        text: NARRATION_PLAN_TITLE,
+        blocks,
+      });
+      return { cardTs };
+    } catch (err) {
+      // Narration decorates a loader that is already standing, so a refusal
+      // costs the words and nothing else. Stable message + Slack's own code,
+      // so the rate is measurable in CloudWatch.
+      log.info(
+        { err: String(err), channel },
+        "slack narration refused; native loader stands",
+      );
+      return null;
+    }
+  },
+
+  async removeThreadNarration({ credentialsJson, channel, cardTs }) {
+    const botToken = credentialsJson
+      ? parseSlackPresenceCredentials(credentialsJson).botToken
+      : undefined;
+    if (!botToken) return;
+    try {
+      await deleteMessage(botToken, { channel, ts: cardTs });
+    } catch (err) {
+      // Already gone (`message_not_found`), or a workspace that refuses the
+      // delete. Either way the card stands with its steps complete: a worse
+      // outcome than removal, but not a broken one.
+      log.info(
+        { err: String(err), channel },
+        "slack narration card left standing",
+      );
+    }
+  },
+
   buildSetupMaterial({ agentName, transport, publicApiUrl }) {
     return buildAgentManifest({ agentName, transport, publicApiUrl });
   },
 
-  rebuildSetupUrls({ externalId, transport, credentialsJson, oauthState }) {
+  rebuildSetupUrls({
+    externalId,
+    transport,
+    appMode,
+    credentialsJson,
+    oauthState,
+  }) {
     const settingsUrl = appSettingsUrl(externalId);
     if (transport !== "events" || !credentialsJson || !oauthState) {
       return { installUrl: null, settingsUrl };
@@ -444,10 +583,11 @@ export const slackProvider: ChannelProvider = {
     if (!clientId) return { installUrl: null, settingsUrl };
     const url = new URL("https://slack.com/oauth/v2/authorize");
     url.searchParams.set("client_id", clientId);
-    // The FULL bot scope list, exactly as the manifest declares it: the
-    // authorize URL's `scope` param is what the install GRANTS — a shorter
-    // list here would mint a bot token missing scopes the agent needs.
-    url.searchParams.set("scope", BOT_SCOPES.join(","));
+    // The FULL bot scope list, exactly as the manifest declares it FOR THIS
+    // APP'S FLAVOR: the authorize URL's `scope` param is what the install
+    // GRANTS — a shorter list here would mint a bot token missing scopes the
+    // agent needs.
+    url.searchParams.set("scope", botScopesFor(appMode).join(","));
     url.searchParams.set("state", oauthState);
     return { installUrl: url.toString(), settingsUrl };
   },

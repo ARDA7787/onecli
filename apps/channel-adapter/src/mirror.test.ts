@@ -220,11 +220,22 @@ describe("what gets posted", () => {
     });
 
     const posted = slack.callsTo("chat.postMessage");
-    // The title rides every automation post as a quiet caption — two
-    // automations reporting into one thread are indistinguishable without it.
+    // The caption rides every automation post — two automations reporting
+    // into one thread are indistinguishable without it. `text` carries the
+    // whole line because it is the notification and search preview.
     expect(posted.map((call) => call.form.text)).toEqual([
-      ':calendar: _Scheduled run "daily-check"_\nInbox is clear &lt;ok&gt;',
+      ':calendar: Scheduled run "daily-check"\nInbox is clear &lt;ok&gt;',
     ]);
+    // ...and the caption renders as CHROME: a context block (smaller, grey),
+    // with the report itself an ordinary section below it.
+    const blocks = JSON.parse(posted[0]?.form.blocks ?? "[]") as unknown[];
+    expect(blocks[0]).toEqual({
+      type: "context",
+      elements: [
+        { type: "mrkdwn", text: ':calendar: Scheduled run "daily-check"' },
+      ],
+    });
+    expect(blocks[1]).toMatchObject({ type: "section" });
   });
 
   it("posts a watch run's report as ONE labeled message with the stopwatch icon", async () => {
@@ -246,7 +257,7 @@ describe("what gets posted", () => {
 
     const posted = slack.callsTo("chat.postMessage");
     expect(posted.map((call) => call.form.text)).toEqual([
-      ':stopwatch: _Watch on "tests"_\nTests passed &lt;ok&gt;',
+      ':stopwatch: Watch on "tests"\nTests passed &lt;ok&gt;',
     ]);
   });
 
@@ -675,7 +686,7 @@ describe("what gets posted", () => {
     });
 
     expect(slack.callsTo("chat.postMessage").map((c) => c.form.text)).toEqual([
-      ":calendar: _Scheduled run **daily** &lt;sweep&gt;_\n*Inbox*\n• *unread:* 0",
+      ":calendar: Scheduled run **daily** &lt;sweep&gt;\n*Inbox*\n• *unread:* 0",
     ]);
   });
 
@@ -692,8 +703,164 @@ describe("what gets posted", () => {
     });
 
     expect(slack.callsTo("chat.postMessage").map((c) => c.form.text)).toEqual([
-      ":calendar: _Scheduled run **daily** &lt;sweep&gt;_",
+      ":calendar: Scheduled run **daily** &lt;sweep&gt;",
     ]);
+  });
+
+  it("captions an automation with ONE line, never its whole run instruction", async () => {
+    // THE LIVE FAILURE (2026-08-31): a watch fire's `turn.message` is the
+    // platform's run INSTRUCTION — header, then the agent's own stored
+    // prompt, then a recent-output excerpt — and Slack printed all of it as
+    // the caption. Readers saw "finish with a SHORT report", cleanup
+    // commands, and a dozen excerpt lines presented as the agent's words.
+    // MUTATION-PROOF: pass `input.title` straight through and the prompt
+    // body and excerpt come back.
+    const controlPlane = createFakeControlPlane(
+      transcriptWith("CI passed on #1004."),
+    );
+
+    await mirror({
+      controlPlane,
+      workItem: item({
+        source: "watch",
+        userId: null,
+        message: [
+          '[Watch on process "CI watcher PR 1004" fired: its output matched.]',
+          "",
+          "Run tail -5 /tmp/ci1004.log for the result.",
+          "Then clean up: rm -rf /tmp/ocl3 /tmp/ci1004.*",
+          "",
+          "[Recent output:]",
+          "RUNNING CI",
+          "RUNNING CI",
+        ].join("\n"),
+      }),
+    });
+
+    const [posted] = slack.callsTo("chat.postMessage");
+    const text = posted?.form.text ?? "";
+    // The caption survives — two automations in one thread must stay
+    // distinguishable — but only its first line.
+    expect(text).toContain("CI watcher PR 1004");
+    // None of the instruction body reaches the channel.
+    expect(text).not.toContain("rm -rf");
+    expect(text).not.toContain("RUNNING CI");
+    expect(text).not.toContain("Recent output");
+    // The agent's actual report still posts, converted, below the caption.
+    expect(text).toContain("CI passed on #1004.");
+  });
+
+  it("chunks a long automation report instead of losing the post", async () => {
+    // Slack caps a section at 3,000 chars and rejects the WHOLE post past
+    // it — after the cursor advanced, which would silently drop the report.
+    // MUTATION-PROOF: pass the body as ONE section and this fails.
+    const controlPlane = createFakeControlPlane(
+      transcriptWith("word ".repeat(2_000)),
+    );
+
+    await mirror({
+      controlPlane,
+      workItem: item({
+        source: "cron",
+        userId: null,
+        message: 'Scheduled run "big"',
+      }),
+    });
+
+    const posted = slack.callsTo("chat.postMessage")[0];
+    const blocks = JSON.parse(posted?.form.blocks ?? "[]") as {
+      type: string;
+      text?: { text: string };
+    }[];
+    expect(blocks[0]?.type).toBe("context");
+    const sections = blocks.filter((block) => block.type === "section");
+    expect(sections.length).toBeGreaterThan(1);
+    for (const section of sections) {
+      expect((section.text?.text ?? "").length).toBeLessThanOrEqual(3_000);
+    }
+  });
+
+  it("clips an over-long single-line caption instead of letting it run", async () => {
+    const controlPlane = createFakeControlPlane(transcriptWith("Done."));
+
+    await mirror({
+      controlPlane,
+      workItem: item({
+        source: "cron",
+        userId: null,
+        message: `Scheduled run "${"very-long-name ".repeat(20)}"`,
+      }),
+    });
+
+    const caption = (slack.callsTo("chat.postMessage")[0]?.form.text ?? "")
+      .split("\n")[0]!
+      // Strip the icon to measure the caption itself.
+      .replace(/^:calendar: /, "");
+    expect(caption.length).toBeLessThanOrEqual(121);
+    expect(caption.endsWith("…")).toBe(true);
+  });
+
+  it("posts the answer, not the narration, from a real multi-message turn", async () => {
+    // END TO END for "the answer is the last message" (supervisor,
+    // 2026-08-31). The transcript here is the shape a working turn actually
+    // produces: narration, a tool batch whose output is huge (the
+    // `RUNNING CI` flood from the reported screenshot), then the closing
+    // message.
+    //
+    // MUTATION-PROOF on the rule that matters: make the outcome reader
+    // ACCUMULATE text events instead of last-wins and this fails. (Tool
+    // output reaching `text` is covered by construction — the closing
+    // message arrives after the tool and would overwrite it either way —
+    // so the tool assertion below is a guard, not the pin.)
+    const controlPlane = createFakeControlPlane({
+      readTranscript: async () => ({
+        events: [
+          { seq: 1, turnId: "t1", type: "turn.started", payload: {} },
+          {
+            seq: 2,
+            turnId: "t1",
+            type: "text",
+            payload: { text: "Let me check the CI logs." },
+          },
+          {
+            seq: 3,
+            turnId: "t1",
+            type: "tool.started",
+            payload: { callId: "c1", name: "bash" },
+          },
+          {
+            seq: 4,
+            turnId: "t1",
+            type: "tool.finished",
+            payload: {
+              callId: "c1",
+              name: "bash",
+              output: "RUNNING CI\n".repeat(12),
+            },
+          },
+          {
+            seq: 5,
+            turnId: "t1",
+            type: "text",
+            payload: { text: "CI passed on #1004; ready for review." },
+          },
+          { seq: 6, turnId: "t1", type: "turn.done", payload: {} },
+        ],
+        nextSince: 7,
+        hasMore: false,
+      }),
+    });
+
+    await mirror({ controlPlane, workItem: item({ source: "web" }) });
+
+    const posted = slack
+      .callsTo("chat.postMessage")
+      .map((call) => call.form.text);
+    // Two posts: the attributed web question, then the answer — the LAST
+    // text event, alone.
+    expect(posted.at(-1)).toBe("CI passed on #1004; ready for review.");
+    expect(posted.at(-1)).not.toContain("Let me check");
+    expect(posted.at(-1)).not.toContain("RUNNING CI");
   });
 
   it("quotes web-sourced questions VERBATIM — markdown in a human's words is not converted", async () => {
